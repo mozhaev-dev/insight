@@ -3,12 +3,12 @@
 > Version 1.0 — March 2026
 > Based on: Unified git data model for Bitbucket, GitHub, and GitLab
 
-Data-source agnostic specification for Version Control connectors. Defines unified Bronze schemas that work across Bitbucket Server, GitHub, GitLab, and custom git sources using a `data_source` discriminator column.
+Data-source agnostic specification for Version Control connectors. Defines unified Silver schemas that work across Bitbucket Server, GitHub, GitLab, and custom git sources using a `data_source` discriminator column. Bronze-level raw API data is defined in source-specific connector specs (e.g., `bitbucket.md`, `github.md`).
 
 <!-- toc -->
 
 - [Overview](#overview)
-- [Bronze Tables](#bronze-tables)
+- [Silver Tables](#silver-tables)
   - [`git_repositories`](#git_repositories)
   - [`git_repositories_ext` — Extended repository properties](#git_repositories_ext-extended-repository-properties)
   - [`git_repository_branches`](#git_repository_branches)
@@ -24,7 +24,7 @@ Data-source agnostic specification for Version Control connectors. Defines unifi
   - [`git_collection_runs` — Connector execution log](#git_collection_runs-connector-execution-log)
 - [Data Source Support](#data-source-support)
 - [Identity Resolution](#identity-resolution)
-- [Silver / Gold Mappings](#silver-gold-mappings)
+- [Silver / Gold Mappings](#silver--gold-mappings)
 - [Open Questions](#open-questions)
   - [OQ-GIT-1: Field naming standardization across sources](#oq-git-1-field-naming-standardization-across-sources)
   - [OQ-GIT-2: Handling source-specific features](#oq-git-2-handling-source-specific-features)
@@ -60,13 +60,13 @@ Data-source agnostic specification for Version Control connectors. Defines unifi
 - Single query across all git sources
 - Consistent identity resolution regardless of source
 - Global deduplication by `commit_hash`
-- Simplified Silver/Gold layer transformation
+- Simplified Silver layer transformation (git_* tables are already unified; Silver adds identity resolution and workspace isolation)
 
 **Source-specific fields**: Platform-specific features (e.g., GitHub's formal review states, Bitbucket's task count) are stored in the `metadata` JSON column and can be extracted in Silver layer if needed.
 
 ---
 
-## Bronze Tables
+## Silver Tables
 
 ### `git_repositories`
 
@@ -735,7 +735,7 @@ WHERE ext.property_key = 'hotfix_flag'
 
 ## Silver / Gold Mappings
 
-| Bronze table | Silver target | Status |
+| Silver table | Silver target | Status |
 |-------------|--------------|--------|
 | `git_repositories` | *(reference table)* | No unified stream — used for filtering and metadata |
 | `git_repositories_ext` | *(aggregated metrics)* | Used for repository analytics dashboards and health scoring |
@@ -743,15 +743,16 @@ WHERE ext.property_key = 'hotfix_flag'
 | `git_commits` | `class_commits` | Planned — stream not yet defined |
 | `git_commits_ext` | *(enrichment data)* | Merged into `class_commits` during Silver transformation |
 | `git_pull_requests` | `class_pr_activity` | Planned — stream not yet defined |
+| `git_pull_requests_ext` | *(enrichment data)* | Merged into `class_pr_activity` during Gold transformation |
 | `git_pull_requests_ext` | *(enrichment data)* | Merged into `class_pr_activity` during Silver transformation |
-| `git_tickets` | Used for `class_task_tracker` cross-reference | Planned |
+| `git_tickets` | Cross-domain join → `class_task_tracker_activities.task_id` | Planned |
 | `git_commit_files` | *(granular detail)* | Available — no unified stream defined yet |
 | `git_pull_requests_reviewers` | *(review analytics)* | Available — aggregated into PR-level metrics |
 | `git_pull_requests_comments` | *(review analytics)* | Available — aggregated into PR-level metrics |
 | `git_pull_requests_commits` | *(junction)* | Used internally for PR↔commit linkage |
 
+**Planned Gold streams**:
 **Planned Silver streams**:
-- `class_commits`: Deduplicated commits with resolved `person_id`, language breakdown, and AI detection flags
 - `class_pr_activity`: PR lifecycle events with review depth metrics and cycle time calculations
 
 **Gold metrics**:
@@ -782,7 +783,7 @@ Some features are platform-specific:
 - Bitbucket: `task_count`, comment `severity` (`BLOCKER`)
 - GitLab: Approval rules, merge request approvals
 
-**Current approach**: Store in `metadata` JSON column, expose in Bronze schema only if widely supported
+**Current approach**: Store in `metadata` JSON column, expose in Silver schema only if widely supported
 
 **Question**: Should we add nullable columns for common source-specific features (e.g., `is_draft`, `task_count`) even if they're NULL for some sources?
 

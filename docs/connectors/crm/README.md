@@ -3,14 +3,21 @@
 > Version 1.0 — March 2026
 > Based on: HubSpot (Source 16) and Salesforce (Source 17)
 
-Data-source agnostic specification for CRM connectors. Defines unified Bronze schemas that work across HubSpot and Salesforce using a `data_source` discriminator column.
+Defines the Silver layer for CRM connectors. The Silver layer has two steps: Step 1 unifies raw Bronze data from source-specific tables (`hubspot_*`, `salesforce_*`) into a common schema; Step 2 enriches with `person_id` via Identity Resolution.
 
 **Primary analytics focus**: internal salespeople (employees) — their deal ownership, activity volume, and workload. External contacts and accounts are reference data only.
+
+**Dual analytics purpose**: CRM connectors serve two distinct analytics use cases that must both be supported:
+
+1. **Pipeline analytics** — deals, stages, pipeline value, win rate, forecast. Answers: *What is in the pipeline? How is it progressing?*
+2. **Sales activity analytics** — outreach activity per sales rep: calls made, emails sent, meetings booked, tasks completed. Answers: *How active is each rep? Are they doing the work that leads to deals?*
+
+Sales activity analytics is the primary signal for **Sales rep productivity measurement** — the equivalent of commit count for engineers. A sales rep's pipeline may lag by weeks or months, but activity volume is an immediate, high-frequency signal that reflects current effort. `crm_activities` is the central table for this use case.
 
 <!-- toc -->
 
 - [Overview](#overview)
-- [Bronze Tables](#bronze-tables)
+- [Silver Tables — Step 1: Unified Schema (pre-Identity Resolution)](#silver-tables--step-1-unified-schema-pre-identity-resolution)
   - [`crm_users` — Internal salesperson directory](#crm_users--internal-salesperson-directory)
   - [`crm_deals` — Deal / opportunity pipeline](#crm_deals--deal--opportunity-pipeline)
   - [`crm_activities` — Calls, meetings, tasks](#crm_activities--calls-meetings-tasks)
@@ -21,7 +28,7 @@ Data-source agnostic specification for CRM connectors. Defines unified Bronze sc
   - [HubSpot](#hubspot)
   - [Salesforce](#salesforce)
 - [Identity Resolution](#identity-resolution)
-- [Silver / Gold Mappings](#silver--gold-mappings)
+- [Silver Step 2 → Gold](#silver-step-2--gold)
 - [Open Questions](#open-questions)
   - [OQ-CRM-1: `is_won` / `is_closed` derivation for HubSpot](#oq-crm-1-is_won--is_closed-derivation-for-hubspot)
   - [OQ-CRM-2: Activity duration normalisation](#oq-crm-2-activity-duration-normalisation)
@@ -62,7 +69,9 @@ Data-source agnostic specification for CRM connectors. Defines unified Bronze sc
 
 ---
 
-## Bronze Tables
+## Silver Tables — Step 1: Unified Schema (pre-Identity Resolution)
+
+> **Silver Step 1**: Data from source-specific Bronze tables ([hubspot.md](hubspot.md) and [salesforce.md](salesforce.md)) is normalized and written here. No `person_id` yet — Identity Resolution runs in Step 2.
 
 ### `crm_users` — Internal salesperson directory
 
@@ -105,6 +114,8 @@ Identity anchor for all CRM analytics. Maps to `person_id` via Identity Manager.
 | `lead_source` | String | NULLABLE | Lead origin (Salesforce only; NULL for HubSpot) |
 | `probability` | Float64 | NULLABLE | Win probability 0–100 (Salesforce only; NULL for HubSpot) |
 | `metadata` | String | REQUIRED | Full API response as JSON |
+| `custom_str_attrs` | Map(String, String) | DEFAULT {} | Workspace-specific string custom fields promoted from `hubspot_deal_ext` / `salesforce_opportunity_ext` per Custom Attributes Configuration |
+| `custom_num_attrs` | Map(String, Float64) | DEFAULT {} | Workspace-specific numeric custom fields promoted from `hubspot_deal_ext` / `salesforce_opportunity_ext` per Custom Attributes Configuration |
 | `created_at` | DateTime64(3) | REQUIRED | Deal creation |
 | `updated_at` | DateTime64(3) | REQUIRED | Last update — cursor for incremental sync |
 | `data_source` | String | DEFAULT '' | Source discriminator |
@@ -169,6 +180,8 @@ Reference data only — not resolved to `person_id`. Used to enrich deal and act
 | `account_id` | String | NULLABLE | Associated company — joins to `crm_accounts.account_id` |
 | `lifecycle_stage` | String | NULLABLE | HubSpot lifecycle stage; NULL for Salesforce (`lead_source` used instead) |
 | `metadata` | String | REQUIRED | Full API response as JSON |
+| `custom_str_attrs` | Map(String, String) | DEFAULT {} | Workspace-specific string custom fields promoted from `hubspot_contact_ext` / `salesforce_contact_ext` per Custom Attributes Configuration |
+| `custom_num_attrs` | Map(String, Float64) | DEFAULT {} | Workspace-specific numeric custom fields (e.g. scores, tiers) |
 | `created_at` | DateTime64(3) | REQUIRED | Record creation |
 | `updated_at` | DateTime64(3) | REQUIRED | Last update |
 | `data_source` | String | DEFAULT '' | Source discriminator |
@@ -225,6 +238,8 @@ Reference data only. Used to group deals and activities by company.
 
 ## Source Mapping
 
+> Per-source Bronze schemas (raw connector output) are defined in [hubspot.md](hubspot.md) and [salesforce.md](salesforce.md). The tables below describe how those Bronze records are normalized into Silver Step 1 unified tables.
+
 ### HubSpot
 
 | Unified table | HubSpot source | Key mapping notes |
@@ -263,25 +278,35 @@ Reference data only. Used to group deals and activities by company.
 
 ---
 
-## Silver / Gold Mappings
+## Silver Step 2 → Gold
 
-| Bronze table | Silver target | Notes |
-|-------------|--------------|-------|
+Silver Step 1 (`crm_*`) feeds into Silver Step 2 (`class_*`) after Identity Resolution adds `person_id`.
+
+| Silver Step 1 table | Silver Step 2 target | Notes |
+|---------------------|----------------------|-------|
 | `crm_users` | Identity Manager (`email` → `person_id`) | Used for identity resolution |
 | `crm_deals` | `class_crm_deals` | Planned — unified deal pipeline stream |
 | `crm_activities` | `class_crm_activities` | Planned — unified activity stream |
-| `crm_contacts` | *(reference only)* | No Silver target — used to enrich deal/activity context |
-| `crm_accounts` | *(reference only)* | No Silver target — used for grouping by company |
+| `crm_contacts` | *(reference only)* | No Silver Step 2 target — used to enrich deal/activity context |
+| `crm_accounts` | *(reference only)* | No Silver Step 2 target — used for grouping by company |
 
-**Planned Silver streams**:
+**Planned Silver Step 2 streams**:
 - `class_crm_deals`: deduplicated deals with resolved `person_id`, normalised `is_won`/`is_closed`, stage category
 - `class_crm_activities`: unified activities with resolved `person_id`, normalised `duration_seconds`, human-readable `outcome`
 
 **Gold metrics**:
+
+*Pipeline analytics* (from `crm_deals`):
 - Per salesperson: deal count, total deal value, win rate, average deal cycle time
-- Activity volume: calls/meetings/tasks per week per person
 - Pipeline health: open deals by stage, weighted pipeline value
-- Workload: activity distribution across team members
+
+*Sales activity analytics* (from `crm_activities`):
+- Activity volume per rep per week: calls made, emails sent, meetings booked, tasks completed
+- Activity mix: ratio of calls vs emails vs meetings per rep (prospecting pattern analysis)
+- Outcome rate: completed activities vs total activities (effectiveness signal)
+- Workload: activity distribution and balance across team members
+
+> **Note on `crm_activities` as the productivity signal**: Sales activity metrics are the primary productivity measure for sales roles — analogous to commit count for engineers. Unlike deal metrics (which lag by weeks or months), activity counts are a real-time signal of daily effort. The `crm_activities` table maps from HubSpot Engagements API (`/crm/v3/objects/calls`, `/meetings`, `/tasks`, `/emails`) and Salesforce Activity objects (`Task` + `Event`). Both sources are already covered in the Bronze schema above.
 
 ---
 
