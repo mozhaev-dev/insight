@@ -2,7 +2,11 @@
 
 > Decision Intelligence Platform
 
-This repository contains the full product specification for **Insight** — an extensible platform that collects operational metrics from across an organization's toolchain, resolves them to a unified data model, and delivers actionable analytics for productivity improvement, bottleneck detection, process performance tracking, and team health reviews.
+**Insight** is an extensible platform that collects operational data from across an organisation's toolchain, resolves all activity to unified person identities, and delivers actionable analytics for productivity improvement, bottleneck detection, process performance tracking, and team health reviews.
+
+This repository is the **monorepo** for the Insight product. It contains:
+- **`src/`** — source code for all platform components
+- **`docs/`** — canonical product and technical specifications (specs, designs, ADRs)
 
 <!-- toc -->
 
@@ -11,12 +15,17 @@ This repository contains the full product specification for **Insight** — an e
   - [Components](#components)
   - [Bronze → Silver → Gold pipeline](#bronze--silver--gold-pipeline)
 - [Repository Structure](#repository-structure)
-  - [docs/](#docs)
-  - [inbox/](#inbox)
-  - [cypilot/](#cypilot)
+  - [`src/`](#src)
+  - [`docs/`](#docs)
+  - [`inbox/`](#inbox)
+  - [`cypilot/`](#cypilot)
 - [Connector Coverage](#connector-coverage)
 - [Key Concepts](#key-concepts)
 - [Working with This Repo](#working-with-this-repo)
+- [Working with `docs/`](#working-with-docs)
+  - [Document types](#document-types)
+  - [Contribution workflow](#contribution-workflow)
+  - [Summary](#summary)
 
 <!-- /toc -->
 
@@ -94,16 +103,26 @@ The solution consists of five main components:
 
 ## Repository Structure
 
+### `src/`
+
+Source code for all platform components. Mirrors the component structure in `docs/components/`.
+
+```
+src/
+├── connectors/       ← connector implementations (one directory per source)
+├── orchestrator/     ← connector orchestration service
+├── backend/          ← REST API server (Django)
+└── frontend/         ← SPA (React + TypeScript)
+```
+
 ### `docs/`
 
-Canonical product and connector specifications.
+Canonical product, domain, and component specifications. The single source of truth for everything architectural and technical.
 
 ```
 docs/
-├── CONNECTORS_REFERENCE.md       ← master Bronze schema reference for all sources
-│
 ├── components/                   ← per-component specifications
-│   ├── connectors/               ← per-source connector specifications
+│   ├── connectors/               ← per-source connector specs (PRD + DESIGN + ADR)
 │   │   ├── README.md             ← connector index + unified streams table
 │   │   ├── git/                  ← GitHub, Bitbucket Server, GitLab
 │   │   ├── task-tracking/        ← YouTrack, Jira
@@ -117,26 +136,28 @@ docs/
 │   │   ├── ui-design/            ← Figma
 │   │   └── testing/              ← Allure TestOps
 │   │
-│   │   Each connector source follows this layout:
-│   │     {source}/
-│   │       specs/
-│   │         PRD.md              ← requirements (actors, FRs, NFRs — code-agnostic)
-│   │         DESIGN.md           ← technical design (schemas, mappings, mechanics)
-│   │         ADR/                ← architecture decisions
-│   │
-│   ├── connectors_orchestrator/  ← connector orchestration layer specs
-│   │   └── specs/ (PRD, DESIGN, ADR)
-│   │
-│   ├── backend/                  ← REST API server: auth, authorization, user management, data proxy
-│   │   └── specs/ (PRD, DESIGN, ADR)
-│   │
-│   └── frontend/                 ← SPA: analytics dashboards, git activity, AI adoption, PR metrics
-│       └── specs/ (PRD, DESIGN, ADR)
+│   ├── connectors-orchestrator/  ← connector orchestration layer specs
+│   ├── backend/                  ← REST API server specs
+│   └── frontend/                 ← SPA specs
 │
-├── domain/                       ← domain model and cross-cutting concepts
+├── domain/                       ← cross-cutting domain designs
+│   ├── connector/                ← Connector Framework: generic architecture, automation
+│   │   └── specs/DESIGN.md       │  boundary, BaseConnector, Unifier, onboarding
+│   │                             │  (per-source details stay in components/connectors/)
+│   └── identity-resolution/      ← Identity Resolution Service: person registry,
+│       └── specs/DESIGN.md       │  alias store, Bootstrap Job, Golden Record,
+│                                 │  match rules, org hierarchy, GDPR erasure
 │
-└── shared/                       ← shared definitions (identity, permissions, data model)
+└── shared/                       ← shared API guidelines, status codes, versioning
+    └── api-guideline/
 ```
+
+**`docs/domain/` vs `docs/components/`:**
+
+| Folder | Contains | When to look here |
+|---|---|---|
+| `docs/domain/` | Cross-cutting platform domains: concepts, algorithms, data models, and contracts that span multiple components | Understanding *how* identity resolution works, *what* the connector framework contract is, *why* the Medallion boundary is where it is |
+| `docs/components/` | Per-component and per-connector specs: PRD (requirements), DESIGN (schemas, APIs, implementation details), ADR | Building, extending, or reviewing a specific connector, the backend, or the frontend |
 
 ### `inbox/`
 
@@ -144,8 +165,11 @@ Incoming documents pending triage and integration into `docs/`. Not yet canonica
 
 | Folder | Status | Intended destination |
 |--------|--------|----------------------|
-| `architecture/` | Draft | Various — identity resolution, permissions, product spec |
-| `airbyte-declarative-standalone/` | Prototype | Connector implementation reference |
+| `architecture/CONNECTORS_ARCHITECTURE.md` + `CONNECTOR_AUTOMATION.md` | **Synthesized** → `docs/domain/connector/specs/DESIGN.md` | Complete |
+| `architecture/IDENTITY_RESOLUTION_V*.md` + `IDENTITY_RESOLUTION.md` | **Synthesized** → `docs/domain/identity-resolution/specs/DESIGN.md` | Complete |
+| `architecture/PRODUCT_SPECIFICATION.md` | Draft | `docs/domain/` or root product spec |
+| `architecture/permissions/` | Draft ADRs | `docs/components/backend/specs/ADR/` |
+| `airbyte-declarative-standalone/` | Prototype | Connector implementation reference in `src/connectors/` |
 | `stats/backend/` | Draft ADRs | `docs/components/backend/specs/ADR/` |
 | `stats/frontend/` | Draft | `docs/components/frontend/specs/` |
 | `streams/` | Draft schemas | `docs/components/connectors/` — per-source stream definitions |
@@ -186,8 +210,10 @@ This repo uses [Cypilot](https://github.com/cyberfabric/cyber-pilot) — an AI a
 
 ## Working with This Repo
 
-- **Browse specs** — Start at [`docs/components/connectors/README.md`](docs/components/connectors/README.md) for the connector index, or [`docs/CONNECTORS_REFERENCE.md`](docs/CONNECTORS_REFERENCE.md) for the master Bronze schema reference.
+- **Browse specs** — Start at [`docs/components/connectors/README.md`](docs/components/connectors/README.md) for the connector index, or [`docs/domain/`](docs/domain/) for cross-cutting platform concepts (identity resolution, connector framework).
+- **Understand a domain** — Read the relevant `docs/domain/{domain}/specs/DESIGN.md` first. These documents describe the platform's core algorithms, data contracts, and architectural decisions that span multiple components.
 - **Add a connector** — Follow the layout in any existing `docs/components/connectors/{domain}/{source}/` directory. Use `specs/PRD.md` for requirements and `specs/DESIGN.md` for table schemas and pipeline mappings.
+- **Add source code** — Place code under `src/{component}/`. The structure mirrors `docs/components/` — `src/connectors/`, `src/backend/`, `src/frontend/`, `src/orchestrator/`.
 - **Cypilot** — Run `cypilot on` in a supported AI agent to activate assisted spec authoring, validation, and traceability. Cypilot is sourced from [github.com/cyberfabric/cyber-pilot](https://github.com/cyberfabric/cyber-pilot).
 - **Inbox** — Documents in `inbox/` are drafts awaiting review. Do not reference them as canonical sources.
 
@@ -195,7 +221,9 @@ This repo uses [Cypilot](https://github.com/cyberfabric/cyber-pilot) — an AI a
 
 ## Working with `docs/`
 
-The `docs/` folder is the single source of truth for all product and connector specifications. Every document here is considered canonical and must go through a review process before being merged.
+The `docs/` folder is the single source of truth for all product specifications, architectural decisions, and technical designs. Every document here is considered canonical and must go through a review process before being merged.
+
+`docs/` describes the **architecture and intent** of the platform. The corresponding implementation lives in `src/`. When adding or changing source code, the relevant spec in `docs/components/{component}/specs/DESIGN.md` should be updated in the same PR (or a follow-up ADR opened if it's a significant design change).
 
 ### Document types
 
