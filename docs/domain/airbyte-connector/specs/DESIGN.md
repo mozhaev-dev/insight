@@ -383,7 +383,7 @@ src/ingestion/connectors/
 The declarative manifest (`connector.yaml`) follows Airbyte's low-code framework:
 
 ```yaml
-version: "0.57.0"
+version: "7.0.4"
 type: DeclarativeSource
 check:
   type: CheckStream

@@ -277,7 +277,7 @@ The system **MUST** support connectors built with Airbyte's Python CDK for sourc
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-ing-tenant-id`
 
-Every connector **MUST** accept `tenant_id` as a configuration parameter and include it as a field in every emitted record. For nocode connectors, this **MUST** be implemented via the `AddFields` transformation in the declarative manifest. For CDK connectors, this **MUST** be implemented in the `read_records()` method.
+Every connector **MUST** accept `tenant_id` as a configuration parameter and include it as a field in every emitted record. For nocode connectors, this **MUST** be implemented via the `AddFields` transformation in the declarative manifest. For CDK connectors, this **MUST** be implemented in the `parse_response()` method.
 
 **Rationale**: Workspace-level data isolation is a platform invariant — all downstream layers (Silver, Gold) depend on `tenant_id` being present in every record.
 
