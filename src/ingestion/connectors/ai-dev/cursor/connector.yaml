@@ -222,6 +222,9 @@ streams:
           Content-Type: application/json
         authenticator:
           $ref: "#/definitions/basic_authenticator"
+        request_body_json:
+          startDate: "{{ stream_interval.start_time | int }}"
+          endDate: "{{ stream_interval.end_time | int }}"
       record_selector:
         type: RecordSelector
         extractor:
@@ -247,14 +250,6 @@ streams:
         type: MinMaxDatetime
         datetime: "{{ day_delta(-30, format='%Y-%m-%d') }}"
         datetime_format: "%Y-%m-%d"
-      start_time_option:
-        type: RequestOption
-        field_name: startDate
-        inject_into: body_json
-      end_time_option:
-        type: RequestOption
-        field_name: endDate
-        inject_into: body_json
 
   # ── Stream 4: cursor_usage_events_daily_resync (daily, POST, fixed window) ──
   - type: DeclarativeStream
@@ -315,6 +310,9 @@ streams:
           Content-Type: application/json
         authenticator:
           $ref: "#/definitions/basic_authenticator"
+        request_body_json:
+          startDate: "{{ stream_interval.start_time | int }}"
+          endDate: "{{ stream_interval.end_time | int }}"
       record_selector:
         type: RecordSelector
         extractor:
@@ -344,14 +342,6 @@ streams:
         type: MinMaxDatetime
         datetime: "{{ day_delta(0, format='%Y-%m-%dT12:08:04Z') }}"
         datetime_format: "%Y-%m-%dT%H:%M:%SZ"
-      start_time_option:
-        type: RequestOption
-        field_name: startDate
-        inject_into: body_json
-      end_time_option:
-        type: RequestOption
-        field_name: endDate
-        inject_into: body_json
 
   # ── Stream 5: cursor_daily_usage (incremental, POST) ──
   - type: DeclarativeStream
