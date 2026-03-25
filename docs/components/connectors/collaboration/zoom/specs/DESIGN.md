@@ -39,7 +39,7 @@
 
 ### 1.1 Architectural Vision
 
-The current Zoom connector implementation is a declarative Airbyte source manifest with four source streams: `users`, `meetings`, `participants`, and `message_activities`. The implemented design is intentionally simple and manifest-driven so that the connector can be regenerated reproducibly from specification artifacts without relying on hidden orchestration logic.
+The current Zoom connector implementation is a declarative Airbyte source manifest with four source streams: `users`, `meetings`, `participants`, and `message_activities`. The executable manifest targets Airbyte declarative manifest version `6.60.9` (manifest yaml format documentation: https://docs.airbyte.com/platform/connector-development/config-based/understanding-the-yaml-file/yaml-overview), and the design is intentionally kept aligned to that runtime format so the connector can be regenerated reproducibly from specification artifacts without relying on hidden orchestration logic.
 
 The current implementation preserves the approved product scope:
 - `users` for identity and attribution support
