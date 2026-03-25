@@ -165,7 +165,8 @@ Resolves `email`/`userEmail` from Cursor Bronze tables to canonical `person_id` 
 
 ### 4.2 Out of Scope
 
-- Silver/Gold layer transformations — responsibility of the AI dev tool domain pipeline
+- Gold layer transformations and cross-source aggregation — responsibility of the AI dev tool domain pipeline
+- Silver step 2 (identity resolution: `email` → `person_id`) — responsibility of the Identity Manager
 - Usage events dual-schedule sync (hourly incremental + daily full resync) — described as future enhancement; initial implementation uses single-schedule incremental sync
 - Cursor workspace or project-level analytics (not available in current API)
 - Real-time streaming — this connector operates in batch mode
@@ -263,7 +264,9 @@ Each stream **MUST** use a primary key to ensure that re-running the connector f
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-cursor-identity-key`
 
-All streams **MUST** include `email` or `userEmail` as a non-null identity field. This field is used by the Identity Manager to resolve Cursor users to canonical `person_id` values in the Silver layer.
+All data streams **MUST** include `email` or `userEmail` as a non-null identity field. This field is used by the Identity Manager to resolve Cursor users to canonical `person_id` values in the Silver layer.
+
+**Exemption**: The monitoring stream `cursor_collection_runs` does not carry a user identity field — it records connector execution metadata and is excluded from the identity resolution requirement.
 
 **Rationale**: Cross-system identity resolution is the foundation of the Insight platform's analytics. Email is a reliable, stable identifier shared across Cursor, Windsurf, GitHub Copilot, and most enterprise systems.
 
@@ -477,6 +480,6 @@ The following checklist domains have been evaluated and determined not applicabl
 | **Performance (PERF)** | Batch connector with native API pagination. No caching, pooling, or latency optimization needed. Rate limit handling (HTTP 429 retry) is the only performance concern, covered in §3.1. |
 | **Reliability (REL)** | Idempotent extraction via deduplication keys. No distributed state, no transactions, no saga patterns. Recovery is handled by re-running the sync (Airbyte framework manages state). |
 | **Usability (UX)** | No user-facing interface. Configuration is a single API key field in the Airbyte UI. |
-| **Compliance (COMPL)** | Usage data contains work emails and AI activity metrics, not regulated PII (healthcare, financial, etc.). Data residency and GDPR considerations apply at the platform level, not the connector level. |
+| **Compliance (COMPL)** | Limited but applicable. Work emails are personal/work-linked data under GDPR. Platform-level controls apply: retention and deletion owned by the Airbyte platform/destination operator; connector must surface any regulated PII to the platform owner. Data residency and access controls are platform responsibilities. |
 | **Maintainability (MAINT)** | Declarative YAML manifest — no custom code to maintain. Schema changes are handled by updating field definitions in the manifest. |
-| **Testing (TEST)** | Declarative connector tested by the Airbyte framework's built-in validation (schema check, connection check). No custom code requiring unit/integration tests. |
+| **Testing (TEST)** | Connector behaviour must satisfy PRD acceptance criteria (§9). Validation includes: Airbyte framework connection check, schema validation, and connector-specific acceptance tests (verify `tenant_id` presence, stream completeness, pagination exhaustion). No custom unit tests required — the declarative manifest is validated by the framework. |

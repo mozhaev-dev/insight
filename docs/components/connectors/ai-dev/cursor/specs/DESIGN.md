@@ -50,7 +50,7 @@ The connector defines four data streams and one monitoring stream:
 
 A fifth stream (`cursor_collection_runs`) captures connector execution metadata for operational monitoring.
 
-All streams share the identity key `email` (field name varies: `email` in members/daily-usage, `userEmail` in events, `user_email` in audit logs).
+All four data streams share the identity key `email` (field name varies: `email` in members/daily-usage, `userEmail` in events, `user_email` in audit logs). The monitoring stream `cursor_collection_runs` does not carry a user identity field — it records connector execution metadata only.
 
 #### System Context
 
@@ -922,8 +922,8 @@ The following checklist domains have been evaluated and are not applicable for t
 | **OPS (Operations)** | Deployed as a standard Airbyte connection — no custom infrastructure, no IaC, no observability beyond what the Airbyte platform provides (job logs, sync metrics, alerting). Deployment topology documented in §3.8. |
 | **MAINT (Maintainability)** | Declarative YAML manifest with no custom code. Maintenance consists of updating field definitions when the API schema changes. No module structure, dependency injection, or layering needed. |
 | **TEST (Testing)** | Declarative connector validated by the Airbyte framework's built-in checks (connection check, schema validation). No custom code to unit-test. Integration testing = run a sync against the live API. |
-| **COMPL (Compliance)** | Usage data contains work emails and AI activity metrics. No regulated PII (healthcare, financial). Data residency and GDPR considerations apply at the Airbyte platform and destination level, not the connector manifest. |
-| **UX (Usability)** | No user-facing interface. The only UX surface is the Airbyte connection configuration form (single `api_key` field), which is defined by the `spec` section of the manifest. |
+| **COMPL (Compliance)** | Limited but applicable. The connector extracts work emails and AI activity metrics — personal/work-linked data under GDPR. Minimum controls: (1) Data classification: emails are personal data; activity metrics are work-linked. (2) Retention and deletion: responsibility of the Airbyte platform and destination owner. (3) Masking/redaction: recommend destination-level controls if required by policy. (4) GDPR/data residency: data access controls owned by the platform operator; connector does not store data beyond transit. |
+| **UX (Usability)** | No user-facing interface. The only UX surface is the Airbyte connection configuration form (two required fields: `tenant_id` and `api_key`), which is defined by the `spec` section of the manifest. |
 
 ### ADR Status
 
