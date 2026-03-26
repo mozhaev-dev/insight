@@ -79,7 +79,7 @@ The API uses Basic authentication with a team API key. Usage and daily-usage end
 
 **Success Criteria**:
 
-- Usage event data extracted with zero data gaps over a billing period (Baseline: no extraction; Target: Q2 2026)
+- Usage event data extracted continuously with no missed billing periods (Baseline: no extraction; Target: Q2 2026) 
 - Per-user daily usage records available for identity resolution within 24 hours of collection (Baseline: N/A; Target: Q2 2026)
 - Cursor data integrated with Windsurf and GitHub Copilot in the unified AI dev tool analytics layer (Baseline: Cursor only; Target: Q3 2026)
 
@@ -153,17 +153,9 @@ Resolves `email`/`userEmail` from Cursor Bronze tables to canonical `person_id` 
 
 ### 4.1 In Scope
 
-- Extraction of team member directory from `GET /teams/members`
-- Extraction of audit log events from `GET /teams/audit-logs`
-- Extraction of individual AI usage events from `POST /teams/filtered-usage-events` (hourly incremental)
-- Daily resync of usage events for the previous day (`cursor_usage_events_daily_resync`) to capture retroactive cost adjustments
-- Extraction of daily aggregated usage from `POST /teams/daily-usage-data`
-- Incremental sync using `timestamp`/`date` as cursors
-- Connector execution monitoring via `cursor_collection_runs` stream
+- Connector execution monitoring via a collection runs stream
 - Identity resolution via `email` and `userEmail`
-- Bronze-layer table schemas for all 6 streams (4 data + 1 resync + 1 monitoring)
-- Connector package descriptor (`descriptor.yaml`) with stream-to-table mappings and Silver targets
-- dbt models for Bronze-to-Silver transformation (`dbt/to_ai_dev_usage.sql` + `schema.yml`)
+- Bronze-layer table schemas for all streams
 
 ### 4.2 Out of Scope
 
@@ -428,11 +420,6 @@ Usage event cost fields (`requestsCosts`, `cursorTokenFee`, `totalCents`) **MUST
 - `email`/`userEmail` is present in every record across all data streams except the monitoring stream (`cursor_collection_runs`), which does not carry user identity fields
 - Pagination is exhausted for all paginated endpoints (no truncated results)
 - Basic authentication works correctly with the team API key
-
-**Future Implementation Validation** (verified upon implementation, not in current PR):
-
-- Upon implementation, `descriptor.yaml` MUST be present at `src/ingestion/connectors/ai-dev/cursor/descriptor.yaml`, valid, and list all 6 streams with correct `bronze_table`, `primary_key`, and `cursor_field` values
-- Upon implementation, `to_ai_dev_usage.sql` MUST compile successfully and produce `class_ai_dev_usage` Silver table preserving `tenant_id` and `data_source`
 - `tenant_id` is present in every record emitted by the connector (injected via `AddFields` transformation in the manifest `spec.connection_specification`)
 
 ## 10. Dependencies
@@ -455,6 +442,7 @@ Usage event cost fields (`requestsCosts`, `cursorTokenFee`, `totalCents`) **MUST
 - The `POST` endpoints accept `startDate`/`endDate` as Unix timestamps in milliseconds in the JSON request body
 - Daily usage data is available with minimal lag (same day or next day)
 - The API returns zero-activity rows for all team members in the daily usage endpoint, even for dates with no activity
+- No two usage events from the same user can share the same millisecond timestamp (required for the computed deduplication key `userEmail + timestamp`)
 
 ## 12. Risks
 
@@ -467,6 +455,7 @@ Usage event cost fields (`requestsCosts`, `cursorTokenFee`, `totalCents`) **MUST
 | Billing period boundary (27th of month) | Events near the boundary may shift between periods | Overlap sync windows across billing period boundaries |
 | `isFreeBugbot` field not in original spec | Schema drift between documentation and actual API | Use actual API response as source of truth; update spec when discrepancies found |
 | Daily usage returns zero-activity rows | Backfill probes backward and never terminates if checking only array length | Check actual metric values (not just row count) to determine earliest activity window |
+| `cursor_collection_runs` stream not implemented in manifest | FR `cpt-insightspec-fr-cursor-collection-runs` and descriptor.yaml reference this stream, but connector.yaml does not include it | Implement the stream in the manifest, or remove from PRD scope and descriptor if monitoring is handled externally by the Airbyte platform |
 
 ## 13. Open Questions
 
@@ -491,6 +480,6 @@ The following checklist domains have been evaluated and determined not applicabl
 | **Performance (PERF)** | Batch connector with native API pagination. No caching, pooling, or latency optimization needed. Rate limit handling (HTTP 429 retry) is the only performance concern, covered in §3.1. |
 | **Reliability (REL)** | Idempotent extraction via deduplication keys. No distributed state, no transactions, no saga patterns. Recovery is handled by re-running the sync (Airbyte framework manages state). |
 | **Usability (UX)** | No user-facing interface. Configuration is a single API key field in the Airbyte UI. |
-| **Compliance (COMPL)** | Limited but applicable. Work emails are personal/work-linked data under GDPR. Platform-level controls apply: retention and deletion owned by the Airbyte platform/destination operator; connector must surface any regulated PII to the platform owner. Data residency and access controls are platform responsibilities. |
+| **Compliance (COMPL)** | Work emails are personal data under GDPR. Retention, deletion, and access controls are delegated to the Airbyte platform and destination operator. The connector must not store credentials outside the platform's secret management. Data residency is a platform responsibility. |
 | **Maintainability (MAINT)** | Declarative YAML manifest — no custom code to maintain. Schema changes are handled by updating field definitions in the manifest. |
 | **Testing (TEST)** | Connector behaviour must satisfy PRD acceptance criteria (§9). Validation includes: Airbyte framework connection check, schema validation, and connector-specific acceptance tests (verify `tenant_id` presence, stream completeness, pagination exhaustion). No custom unit tests required — the declarative manifest is validated by the framework. |
