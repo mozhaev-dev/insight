@@ -1,0 +1,462 @@
+# BambooHR Connector — Airbyte Declarative Manifest
+# Extracts: employees (custom report), leave requests, field metadata
+# Auth: API Key via Authorization header
+# Sync: full refresh (no incremental — BambooHR is current-state only)
+
+version: "6.44.0"
+
+definitions:
+  # --- Shared components ---
+
+  base_requester:
+    type: HttpRequester
+    url_base: "https://{{ config['domain'] }}.bamboohr.com/api/v1/"
+    http_method: GET
+    authenticator:
+      type: BasicHttpAuthenticator
+      username: "{{ config['api_key'] }}"
+      password: "x"
+    request_headers:
+      Accept: "application/json"
+    error_handler:
+      type: CompositeErrorHandler
+      error_handlers:
+        - type: DefaultErrorHandler
+          response_filters:
+            - type: HttpResponseFilter
+              http_codes: [429]
+              action: RATE_LIMITED
+          backoff_strategies:
+            - type: WaitTimeFromHeader
+              header: "Retry-After"
+            - type: ExponentialBackoffStrategy
+              factor: 5
+        - type: DefaultErrorHandler
+          response_filters:
+            - type: HttpResponseFilter
+              http_codes: [503]
+              action: RATE_LIMITED
+          backoff_strategies:
+            - type: WaitTimeFromHeader
+              header: "Retry-After"
+            - type: ExponentialBackoffStrategy
+              factor: 5
+        - type: DefaultErrorHandler
+          response_filters:
+            - type: HttpResponseFilter
+              http_codes: [500, 502, 504]
+              action: RETRY
+          backoff_strategies:
+            - type: ExponentialBackoffStrategy
+              factor: 5
+          max_retries: 5
+
+  # --- Stream definitions ---
+
+  employees_stream:
+    type: DeclarativeStream
+    name: "employees"
+    primary_key: "id"
+    retriever:
+      type: SimpleRetriever
+      requester:
+        $ref: "#/definitions/base_requester"
+        path: "reports/custom"
+        http_method: POST
+        request_body_json:
+          title: "Insight Employee Sync"
+          fields:
+            # --- Identity & name ---
+            - "id"
+            - "displayName"
+            - "firstName"
+            - "lastName"
+            - "workEmail"
+            - "employeeNumber"
+            # --- Job & org ---
+            - "jobTitle"
+            - "department"
+            - "division"
+            - "status"
+            - "employmentHistoryStatus"
+            # --- Manager / hierarchy ---
+            - "supervisor"
+            - "supervisorEId"
+            - "supervisorEmail"
+            # --- Location ---
+            - "location"
+            - "country"
+            - "city"
+            # --- Dates ---
+            - "hireDate"
+            - "originalHireDate"
+            - "terminationDate"
+            - "lastChanged"
+            # --- Employment ---
+            - "payType"
+            - "standardHoursPerWeek"
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path:
+            - employees
+      paginator:
+        type: NoPagination
+    transformations:
+      - type: AddFields
+        fields:
+          - path: [tenant_id]
+            value: "{{ config['tenant_id'] }}"
+          - path: [source_instance_id]
+            value: "bamboohr-{{ config['domain'] }}"
+          - path: [_source]
+            value: "bamboohr"
+          - path: [_extracted_at]
+            value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        $schema: "http://json-schema.org/draft-07/schema#"
+        type: object
+        additionalProperties: true
+        properties:
+          tenant_id:
+            type: string
+          source_instance_id:
+            type: string
+          id:
+            type: string
+          displayName:
+            type:
+              - "null"
+              - string
+          firstName:
+            type:
+              - "null"
+              - string
+          lastName:
+            type:
+              - "null"
+              - string
+          workEmail:
+            type:
+              - "null"
+              - string
+          employeeNumber:
+            type:
+              - "null"
+              - string
+          jobTitle:
+            type:
+              - "null"
+              - string
+          department:
+            type:
+              - "null"
+              - string
+          division:
+            type:
+              - "null"
+              - string
+          status:
+            type:
+              - "null"
+              - string
+          employmentHistoryStatus:
+            type:
+              - "null"
+              - string
+          supervisor:
+            type:
+              - "null"
+              - string
+          supervisorEId:
+            type:
+              - "null"
+              - string
+          supervisorEmail:
+            type:
+              - "null"
+              - string
+          location:
+            type:
+              - "null"
+              - string
+          country:
+            type:
+              - "null"
+              - string
+          city:
+            type:
+              - "null"
+              - string
+          hireDate:
+            type:
+              - "null"
+              - string
+          originalHireDate:
+            type:
+              - "null"
+              - string
+          terminationDate:
+            type:
+              - "null"
+              - string
+          lastChanged:
+            type:
+              - "null"
+              - string
+            format: date-time
+          payType:
+            type:
+              - "null"
+              - string
+          standardHoursPerWeek:
+            type:
+              - "null"
+              - string
+          _source:
+            type: string
+          _extracted_at:
+            type: string
+            format: date-time
+
+  leave_requests_stream:
+    type: DeclarativeStream
+    name: "leave_requests"
+    primary_key: "id"
+    retriever:
+      type: SimpleRetriever
+      requester:
+        $ref: "#/definitions/base_requester"
+        path: "time_off/requests"
+        request_parameters:
+          start: "2020-01-01"
+          end: "{{ now_utc().strftime('%Y-%m-%d') }}"
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path: []
+      paginator:
+        type: NoPagination
+    transformations:
+      - type: AddFields
+        fields:
+          - path: [tenant_id]
+            value: "{{ config['tenant_id'] }}"
+          - path: [source_instance_id]
+            value: "bamboohr-{{ config['domain'] }}"
+          - path: [_source]
+            value: "bamboohr"
+          - path: [_extracted_at]
+            value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        $schema: "http://json-schema.org/draft-07/schema#"
+        type: object
+        additionalProperties: true
+        properties:
+          tenant_id:
+            type: string
+          source_instance_id:
+            type: string
+          id:
+            type: string
+          employeeId:
+            type:
+              - "null"
+              - string
+          name:
+            type:
+              - "null"
+              - string
+          status:
+            type:
+              - "null"
+              - object
+            properties:
+              lastChanged:
+                type:
+                  - "null"
+                  - string
+              lastChangedByUserId:
+                type:
+                  - "null"
+                  - string
+              status:
+                type:
+                  - "null"
+                  - string
+          start:
+            type:
+              - "null"
+              - string
+            format: date
+          end:
+            type:
+              - "null"
+              - string
+            format: date
+          created:
+            type:
+              - "null"
+              - string
+            format: date
+          type:
+            type:
+              - "null"
+              - object
+            properties:
+              id:
+                type:
+                  - "null"
+                  - string
+              name:
+                type:
+                  - "null"
+                  - string
+              icon:
+                type:
+                  - "null"
+                  - string
+          amount:
+            type:
+              - "null"
+              - object
+            properties:
+              unit:
+                type:
+                  - "null"
+                  - string
+              amount:
+                type:
+                  - "null"
+                  - string
+          dates:
+            type:
+              - "null"
+              - object
+            additionalProperties: true
+          notes:
+            type:
+              - "null"
+              - object
+            additionalProperties: true
+          _source:
+            type: string
+          _extracted_at:
+            type: string
+            format: date-time
+
+  meta_fields_stream:
+    type: DeclarativeStream
+    name: "meta_fields"
+    primary_key: "unique"
+    retriever:
+      type: SimpleRetriever
+      requester:
+        $ref: "#/definitions/base_requester"
+        path: "meta/fields"
+        request_headers:
+          Accept: "application/json"
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path: []
+      paginator:
+        type: NoPagination
+    transformations:
+      - type: AddFields
+        fields:
+          - path: ["unique"]
+            value: "{{ 'd' ~ record['id'] if record.get('deprecated', false) else record['id'] | string }}"
+          - path: [tenant_id]
+            value: "{{ config['tenant_id'] }}"
+          - path: [source_instance_id]
+            value: "bamboohr-{{ config['domain'] }}"
+          - path: [_source]
+            value: "bamboohr"
+          - path: [_extracted_at]
+            value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        $schema: "http://json-schema.org/draft-07/schema#"
+        type: object
+        additionalProperties: true
+        properties:
+          tenant_id:
+            type: string
+          source_instance_id:
+            type: string
+          id:
+            type:
+              - number
+              - string
+          name:
+            type: string
+          type:
+            type: string
+          alias:
+            type:
+              - "null"
+              - string
+          unique:
+            type:
+              - number
+              - string
+          deprecated:
+            type:
+              - "null"
+              - boolean
+          _source:
+            type: string
+          _extracted_at:
+            type: string
+            format: date-time
+
+streams:
+  - $ref: "#/definitions/employees_stream"
+  - $ref: "#/definitions/leave_requests_stream"
+  - $ref: "#/definitions/meta_fields_stream"
+
+check:
+  type: CheckStream
+  stream_names:
+    - "meta_fields"
+
+spec:
+  type: Spec
+  documentation_url: "https://documentation.bamboohr.com/reference"
+  connection_specification:
+    $schema: "http://json-schema.org/draft-07/schema#"
+    title: "BambooHR Source"
+    type: object
+    required:
+      - "tenant_id"
+      - "api_key"
+      - "domain"
+    additionalProperties: true
+    properties:
+      tenant_id:
+        type: string
+        title: "Tenant ID"
+        description: "Tenant isolation identifier (UUID)."
+        order: 0
+      api_key:
+        type: string
+        title: "API Key"
+        description: "BambooHR API key for authentication. Found in BambooHR > Account > API Keys."
+        airbyte_secret: true
+        order: 1
+      domain:
+        type: string
+        title: "Domain"
+        description: "Your BambooHR subdomain (e.g., 'acme' from acme.bamboohr.com)."
+        examples:
+          - "acme"
+        order: 2
