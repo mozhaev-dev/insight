@@ -103,6 +103,7 @@ definitions:
             BillingCity, BillingState, BillingCountry,
             NumberOfEmployees, AnnualRevenue,
             IsDeleted, CreatedDate, LastModifiedDate, SystemModstamp
+            {{ ', ' + ', '.join(config.get('accounts_custom_fields', [])) if config.get('accounts_custom_fields') else '' }}
             FROM Account
       record_selector:
         $ref: "#/definitions/base_record_selector"
@@ -193,6 +194,7 @@ definitions:
             SELECT Id, FirstName, LastName, Email, Title, Phone,
             AccountId, OwnerId, LeadSource,
             IsDeleted, CreatedDate, LastModifiedDate, SystemModstamp
+            {{ ', ' + ', '.join(config.get('contacts_custom_fields', [])) if config.get('contacts_custom_fields') else '' }}
             FROM Contact
       record_selector:
         $ref: "#/definitions/base_record_selector"
@@ -279,6 +281,7 @@ definitions:
             AccountId, OwnerId,
             IsClosed, IsWon, IsDeleted,
             CreatedDate, LastModifiedDate, SystemModstamp
+            {{ ', ' + ', '.join(config.get('opportunities_custom_fields', [])) if config.get('opportunities_custom_fields') else '' }}
             FROM Opportunity
       record_selector:
         $ref: "#/definitions/base_record_selector"
@@ -766,3 +769,36 @@ spec:
         examples:
           - "2024-01-01T00:00:00Z"
         order: 5
+      opportunities_custom_fields:
+        type: array
+        items:
+          type: string
+        title: "Opportunity Custom Fields"
+        description: >-
+          Optional list of custom Salesforce field API names (__c suffix) to
+          include in Opportunity extraction (e.g., 'Customer_Segment__c',
+          'Contract_Value__c'). Use the Describe API to discover available fields.
+        default: []
+        order: 6
+      contacts_custom_fields:
+        type: array
+        items:
+          type: string
+        title: "Contact Custom Fields"
+        description: >-
+          Optional list of custom Salesforce field API names (__c suffix) to
+          include in Contact extraction (e.g., 'Preferred_Language__c',
+          'Customer_Tier__c').
+        default: []
+        order: 7
+      accounts_custom_fields:
+        type: array
+        items:
+          type: string
+        title: "Account Custom Fields"
+        description: >-
+          Optional list of custom Salesforce field API names (__c suffix) to
+          include in Account extraction (e.g., 'Account_Region__c',
+          'CSM_Owner__c').
+        default: []
+        order: 8
