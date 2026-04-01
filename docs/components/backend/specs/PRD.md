@@ -181,6 +181,8 @@ The product is deployed as a standalone installation on customer Kubernetes clus
 - Circuit breaker pattern (future v2 -- retry with backoff is sufficient for v1)
 - GDPR data deletion workflows (future -- schema designed to not preclude it)
 - Custom report scheduling (future -- CSV export is manual in v1)
+- PDF report generation (future v2 -- LLM-generated documents following a configurable structure: section descriptions, metric analysis, trend narratives, executive summary; charts embedded from analytics data; intended for stakeholder distribution)
+- Public analytics API (future v2 -- external API for customers to query analytics data programmatically, build custom integrations, and process metrics outside the bundled frontend; v1 exposes internal APIs consumed only by the bundled React SPA)
 - Frontend implementation (separate PRD)
 
 ## 5. Functional Requirements
@@ -375,13 +377,13 @@ The system **MUST** use forward-only database migrations for all MariaDB schema 
 
 **Actors**: `cpt-insightspec-actor-tenant-admin`
 
-#### Migration Execution on Startup
+#### Migration Execution via K8s Jobs
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-be-migration-on-startup`
 
-Each service **MUST** run its own pending database migrations automatically on startup before accepting traffic. Migrations **MUST** be idempotent -- re-running a migration that has already been applied **MUST** be a no-op. Only one replica **MUST** execute migrations at a time (leader election or migration lock).
+Each service **MUST** provide a migration binary (or CLI command) that runs pending database migrations. Migrations **MUST** be executed as Kubernetes Jobs (Helm pre-upgrade hook or ArgoCD sync wave) before new application pods are rolled out. The migration Job **MUST** complete successfully before the deployment proceeds. Migrations **MUST** be idempotent -- re-running a migration that has already been applied **MUST** be a no-op.
 
-**Rationale**: Automated migrations on startup eliminate manual deployment steps and ensure schema is always in sync with application code. Idempotency prevents failures during pod restarts. Single-writer prevents race conditions on concurrent deployments.
+**Rationale**: K8s Jobs run once per deployment, have clear success/failure semantics, and complete before new pods start. This eliminates leader election complexity, avoids slowing service startup, and provides a clean separation between migration (deployment step) and application runtime.
 
 **Actors**: `cpt-insightspec-actor-tenant-admin`
 
@@ -660,7 +662,7 @@ Every service **MUST** expose versioned API endpoints (`/api/v1/...`) from day o
 - [ ] Audit trail captures all data access and configuration changes with queryable retention
 - [ ] Identity resolution maps aliases from multiple sources into a single person golden record
 - [ ] dbt transform rules can be configured and triggered, producing Silver step 2 and Gold tables
-- [ ] Database migrations run automatically on startup with zero-downtime rolling deployments
+- [ ] Database migrations run as K8s Jobs before pod rollout with zero-downtime deployments
 - [ ] System deploys on a fresh Kubernetes cluster via single `helm install` command
 - [ ] System recovers from dependency failures (ClickHouse, MariaDB, LDAP) within retry budget without data loss
 

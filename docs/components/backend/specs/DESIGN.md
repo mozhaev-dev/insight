@@ -83,7 +83,7 @@ The system is deployed as a **standalone product** on Kubernetes via a single He
 | `cpt-insightspec-fr-be-identity-resolution-service` | Identity Resolution Service maps cross-source aliases to canonical person_id, golden record, merge/split |
 | `cpt-insightspec-fr-be-transform-rules` | Transform Service manages dbt model configs, Silver/Gold rules, field mappings, triggers dbt runs via Kestra |
 | `cpt-insightspec-fr-be-forward-only-migrations` | Forward-only MariaDB migrations via modkit-db (SeaORM); no rollback scripts |
-| `cpt-insightspec-fr-be-migration-on-startup` | Each service runs pending migrations on startup with leader election |
+| `cpt-insightspec-fr-be-migration-on-startup` | Each service provides migration binary; executed as K8s Job (Helm pre-upgrade hook) before pod rollout |
 
 #### NFR Allocation
 
@@ -1106,6 +1106,7 @@ insight-helm/
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
 │   │   ├── hpa.yaml
+│   │   ├── migration-job.yaml        # Helm pre-upgrade hook
 │   │   └── sealedsecret.yaml
 │   ├── connector-manager/
 │   ├── identity-service/
@@ -1193,8 +1194,8 @@ helm install insight insight/insight -f values-override.yaml -n insight --create
 ### 5.4 Upgrades
 
 - `helm upgrade insight insight/insight -f values-override.yaml`
-- **Forward-only migrations**: Each service runs own pending DB migrations on startup via modkit-db (SeaORM). No rollback scripts exist. A broken migration is fixed by shipping a new forward migration. Destructive changes (column drops, table drops) are deferred to a follow-up migration after old code is fully decommissioned.
-- **Migration safety**: Migrations execute with leader election (single writer) to prevent race conditions. Migrations are idempotent -- re-running an applied migration is a no-op.
+- **Forward-only migrations**: No rollback scripts. A broken migration is fixed by shipping a new forward migration. Destructive changes (column drops, table drops) are deferred to a follow-up migration after old code is fully decommissioned.
+- **Migration execution**: Each service provides a migration binary. Migrations run as Kubernetes Jobs (Helm pre-upgrade hooks or ArgoCD sync waves) before new pods roll out. The Job must complete successfully before deployment proceeds. Migrations are idempotent.
 - **Backward-compatible schemas**: Every migration must be compatible with the previous application version, allowing old and new pods to coexist during rolling deployment.
 - API versioning ensures older clients work during rolling updates
 - Zero-downtime via K8s rolling deployment strategy and ArgoCD sync
