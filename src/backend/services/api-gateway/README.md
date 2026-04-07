@@ -68,10 +68,10 @@ The plugin extracts these claims from the JWT:
 | Claim | Maps to | Default behavior |
 |-------|---------|-----------------|
 | `sub` | `subject_id` (as UUID v5 hash) | Required |
-| `scp` or `scope` | `token_scopes` | `["*"]` if missing |
-| `tenant_id` (configurable) | `subject_tenant_id` | Nil UUID if missing |
+| `scp` or `scope` | `token_scopes` | Empty if neither present (authz layer decides) |
+| `{tenant_claim}` (configurable) | `subject_tenant_id` | Warning logged if missing. Rejected if `require_tenant_claim: true`, nil UUID if `false` (default). |
 
-To use a different claim for tenant ID, set `tenant_claim` in config.
+To use a different claim for tenant ID, set `tenant_claim` in config. Set `require_tenant_claim: true` to reject tokens without a valid tenant UUID.
 
 ## Deploy to Kubernetes
 
@@ -132,16 +132,38 @@ The gateway is a cyberfabric-core ModKit server binary that links:
 | `module-orchestrator` | Module lifecycle management |
 | `types-registry` | GTS type/plugin discovery |
 
-## Health endpoints
-
-Provided by cyberfabric `api-gateway` module (public, no auth required):
+## Public endpoints (no auth required)
 
 | Endpoint | Response | Purpose |
 |----------|----------|---------|
-| `GET /health` | `{"status":"healthy","timestamp":"..."}` | Liveness + readiness probe |
+| `GET /health` | `{"status":"healthy","timestamp":"..."}` | K8s liveness + readiness probe |
 | `GET /healthz` | `ok` | Simple liveness check |
+| `GET /auth/config` | OIDC configuration JSON (see below) | Frontend reads this to initiate OIDC login |
 
-Both are registered as public routes — no JWT token needed. Used by Kubernetes liveness and readiness probes.
+### `GET /auth/config`
+
+Returns the OIDC provider details the frontend needs to start the Authorization Code flow with PKCE. No token required.
+
+```json
+{
+  "issuer_url": "https://dev-12345.okta.com/oauth2/default",
+  "client_id": "0oa1b2c3d4e5f6g7h8i9",
+  "redirect_uri": "http://localhost:3000/callback",
+  "scopes": ["openid", "profile", "email"],
+  "response_type": "code"
+}
+```
+
+Frontend flow:
+1. Fetch `/auth/config` on startup
+2. Construct Okta authorize URL from `issuer_url` + `client_id` + `redirect_uri` + `scopes`
+3. Redirect user to Okta login
+4. Okta redirects back with auth code
+5. Frontend exchanges code for tokens
+6. Frontend sends `Authorization: Bearer <access_token>` on every API call
+7. If API returns 401 → redirect to Okta again (token expired)
+
+Configured via `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI` env vars (or Helm values `oidc.clientId`, `oidc.redirectUri`).
 
 ## Building
 

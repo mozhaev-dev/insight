@@ -37,7 +37,7 @@ pub struct OidcAuthnPluginConfig {
     /// JWKS endpoint URL override. If empty, defaults to `{issuer_url}/v1/keys` (Okta convention).
     /// **Must be set explicitly** for non-Okta providers:
     /// - Keycloak: `{issuer}/protocol/openid-connect/certs`
-    /// - Auth0: `{issuer}.well-known/jwks.json`
+    /// - Auth0: `{issuer}/.well-known/jwks.json`
     pub jwks_url: String,
 
     /// JWKS key refresh interval in seconds.
