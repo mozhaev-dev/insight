@@ -7,20 +7,18 @@ server:
   home_dir: "/app/data"
 
 logging:
+  # Console-only logging (stdout → K8s log collector → Loki).
+  # File logging disabled — container filesystem is ephemeral.
   default:
     console_level: info
-    file: "logs/insight.log"
-    file_level: info
   api-gateway:
     console_level: debug
-    file: "logs/api.log"
-    file_level: debug
 
 modules:
   api-gateway:
     config:
       bind_addr: "0.0.0.0:8080"
-      enable_docs: true
+      enable_docs: false
       cors_enabled: true
       prefix_path: "/api/v1"
       openapi:
@@ -67,11 +65,13 @@ modules:
       leeway_seconds: 60
 
   # ─── Auth Info (public endpoint for frontend) ───────────────
+  # NOTE: issuer_url MUST match oidc-authn-plugin.config.issuer_url above.
+  # Both are set from the same OIDC_ISSUER_URL env var / Helm oidc.issuerUrl value.
   auth-info:
     config:
-      issuer_url: "${OIDC_ISSUER_URL}"    # Same as oidc-authn-plugin
-      client_id: "${OIDC_CLIENT_ID}"      # Frontend (public) client ID
-      redirect_uri: "${OIDC_REDIRECT_URI}" # e.g., https://insight.example.com/callback
+      issuer_url: "${OIDC_ISSUER_URL}"
+      client_id: "${OIDC_CLIENT_ID}"
+      redirect_uri: "${OIDC_REDIRECT_URI}"
       scopes:
         - openid
         - profile

@@ -3,10 +3,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Release.Name }}-api-gateway
+  name: {{ include "insight-api-gateway.fullname" . }}
   labels:
-    app.kubernetes.io/name: api-gateway
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "insight-api-gateway.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -18,18 +17,18 @@ spec:
   {{- if .Values.ingress.tls.enabled }}
   tls:
     - hosts:
-        - {{ .Values.ingress.host | quote }}
+        - {{ $host | quote }}
       secretName: {{ .Values.ingress.tls.secretName | quote }}
   {{- end }}
   rules:
-    - host: {{ .Values.ingress.host | quote }}
+    - host: {{ $host | quote }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ .Release.Name }}-api-gateway
+                name: {{ include "insight-api-gateway.fullname" . }}
                 port:
                   name: http
 {{- end }}

@@ -13,15 +13,33 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-# Copy workspace Cargo files first for layer caching
+# --- Dependency caching layer ---
+# Copy Cargo manifests and create stubs so cargo can cache all dependencies.
 COPY Cargo.toml Cargo.lock ./
+COPY libs/insight-clickhouse/Cargo.toml ./libs/insight-clickhouse/Cargo.toml
+COPY plugins/oidc-authn-plugin/Cargo.toml ./plugins/oidc-authn-plugin/Cargo.toml
+COPY services/api-gateway/Cargo.toml ./services/api-gateway/Cargo.toml
 
-# Copy all workspace members
-COPY libs/ ./libs/
-COPY plugins/ ./plugins/
-COPY services/api-gateway/ ./services/api-gateway/
+RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/src/lib.rs && \
+    mkdir -p plugins/oidc-authn-plugin/src && echo "" > plugins/oidc-authn-plugin/src/lib.rs && \
+    mkdir -p services/api-gateway/src && echo "fn main() {}" > services/api-gateway/src/main.rs
 
-# Build release binary
+# Cache dependencies
+RUN cargo build --release --bin insight-api-gateway 2>/dev/null || true
+
+# --- Source layer ---
+# Remove stubs and cached binaries, copy real source + config
+RUN rm -rf libs/insight-clickhouse/src plugins/oidc-authn-plugin/src services/api-gateway/src \
+    target/release/insight-api-gateway target/release/deps/insight_api_gateway* \
+    target/release/deps/oidc_authn_plugin* target/release/deps/liboidc_authn_plugin* \
+    target/release/deps/insight_clickhouse* target/release/deps/libinsight_clickhouse*
+
+COPY libs/insight-clickhouse/src/ ./libs/insight-clickhouse/src/
+COPY plugins/oidc-authn-plugin/src/ ./plugins/oidc-authn-plugin/src/
+COPY services/api-gateway/src/ ./services/api-gateway/src/
+COPY services/api-gateway/config/ ./services/api-gateway/config/
+
+# Build release binary (deps cached, only our code compiles)
 RUN cargo build --release --bin insight-api-gateway
 
 # Stage 2: Runtime
@@ -33,13 +51,9 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Copy binary
 COPY --from=builder /build/target/release/insight-api-gateway /app/insight-api-gateway
-
-# Copy config
 COPY --from=builder /build/services/api-gateway/config/ /app/config/
 
-# Create data dir and non-root user
 RUN mkdir -p /app/data && \
     useradd -U -u 1000 appuser && \
     chown -R 1000:1000 /app

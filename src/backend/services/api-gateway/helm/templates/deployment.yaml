@@ -1,27 +1,29 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-api-gateway
+  name: {{ include "insight-api-gateway.fullname" . }}
   labels:
-    app.kubernetes.io/name: api-gateway
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "insight-api-gateway.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: api-gateway
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "insight-api-gateway.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: api-gateway
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "insight-api-gateway.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- if not .Values.authDisabled }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: api-gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -33,14 +35,15 @@ spec:
               containerPort: {{ .Values.service.port }}
               protocol: TCP
           envFrom:
-            # Non-sensitive config (bind addr, prefix, cors, auth_disabled)
             - configMapRef:
-                name: {{ .Release.Name }}-api-gateway-config
+                name: {{ include "insight-api-gateway.fullname" . }}-config
             {{- if not .Values.authDisabled }}
-            # OIDC config (Secret or SealedSecret)
             - secretRef:
-                name: {{ .Release.Name }}-api-gateway-oidc
+                name: {{ include "insight-api-gateway.fullname" . }}-oidc
             {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
