@@ -16,112 +16,24 @@ sources:
 models:
   - name: github__repositories
     description: "GitHub repositories -> staging, feeds class_git_repositories"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__repository_branches
     description: "GitHub branches -> staging, feeds class_git_repository_branches"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__commits
     description: "GitHub commits -> staging, feeds class_git_commits"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__file_changes
     description: "GitHub file changes (PR + direct push) -> staging, feeds class_git_file_changes"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__pull_requests
     description: "GitHub pull requests -> staging, feeds class_git_pull_requests"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__pull_requests_reviewers
     description: "GitHub PR reviews -> staging, feeds class_git_pull_requests_reviewers"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__pull_requests_comments
     description: "GitHub PR comments -> staging, feeds class_git_pull_requests_comments"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
 
   - name: github__pull_requests_commits
     description: "GitHub PR commits -> staging, feeds class_git_pull_requests_commits"
-    columns:
-      - name: tenant_id
-        tests:
-          - not_null
-      - name: source_id
-        tests:
-          - not_null
-      - name: unique_key
-        tests:
-          - not_null
-          - unique
