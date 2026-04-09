@@ -1,71 +1,127 @@
 ---
 status: proposed
-date: 2026-04-08
+date: 2026-04-09
 authors: ["insight-front team"]
 ---
 
-# Analytics View Endpoints — Backend Proposal
+# Analytics API — Frontend Data Requirements
 
 <!-- toc -->
 
-- [1. Overview](#1-overview)
-- [2. Motivation: View Endpoints vs. OData](#2-motivation-view-endpoints-vs-odata)
+- [1. Scope](#1-scope)
+- [2. Architecture Alignment with DESIGN.md](#2-architecture-alignment-with-designmd)
+  - [Remaining discrepancies with upstream DESIGN.md](#remaining-discrepancies-with-upstream-designmd)
 - [3. Data Sources Inventory](#3-data-sources-inventory)
-- [4. Endpoints](#4-endpoints)
-  - [4.1 Executive View](#41-executive-view)
-  - [4.2 Team View](#42-team-view)
-  - [4.3 IC Dashboard](#43-ic-dashboard)
-  - [4.4 Drill Endpoints](#44-drill-endpoints)
-- [5. Shared Types](#5-shared-types)
-- [6. Data Availability Envelope](#6-data-availability-envelope)
-- [7. Period Granularity Contract](#7-period-granularity-contract)
-- [8. CI Connector Roadmap](#8-ci-connector-roadmap)
-- [9. Implementation Checklist](#9-implementation-checklist)
+- [4. Required Metric Definitions](#4-required-metric-definitions)
+  - [4.1 Executive Summary Metric](#41-executive-summary-metric)
+  - [4.2 Team Member Metric](#42-team-member-metric)
+  - [4.3 IC (Individual Contributor) Metric](#43-ic-individual-contributor-metric)
+  - [4.4 Org Aggregate (FE-Computed)](#44-org-aggregate-fe-computed)
+  - [4.5 IC Chart Trend Metrics](#45-ic-chart-trend-metrics)
+  - [4.6 Person Profile (Identity Service)](#46-person-profile-identity-service)
+  - [4.7 Time Off Notice Metric](#47-time-off-notice-metric)
+  - [4.8 Drill Metrics](#48-drill-metrics)
+- [5. Screen → Metric Mapping](#5-screen--metric-mapping)
+- [6. Frontend-Computed Fields](#6-frontend-computed-fields)
+- [7. Open Questions](#7-open-questions)
+- [8. Data Availability Envelope](#8-data-availability-envelope)
+- [9. CI Connector Roadmap](#9-ci-connector-roadmap)
+- [10. Implementation Checklist](#10-implementation-checklist)
 
 <!-- /toc -->
 
 ---
 
-## 1. Overview
+## 1. Scope
 
-This document proposes five pre-aggregated view endpoints for the Analytics API service.
-They are consumed by the `insight-front` frontend (React) and replace the need for the
-frontend to construct complex queries against the generic OData endpoint.
+This document defines what data the `insight-front` React frontend needs from the Analytics API,
+expressed in terms of the `Metric` and `Dashboard` entities defined in
+`docs/components/backend/specs/DESIGN.md`.
 
-**Base path:** `GET /api/v1/analytics/views/...`  
-**Auth:** `Authorization: Bearer <token>` + `X-Tenant-ID: <tenantId>`
+It does **not** re-propose a new API shape. It adopts DESIGN.md as the architecture baseline
+and specifies:
+
+- Which `Metric` entries the frontend requires (seeded in MariaDB via the metrics catalog)
+- Which columns each metric's `query_ref` must expose
+- Which fields the frontend will compute locally (removing backend burden)
+- Open questions where the generic query model needs clarification to cover screen needs
 
 ---
 
-## 2. Motivation: View Endpoints vs. OData
+## 2. Architecture Alignment with DESIGN.md
 
-The backend DESIGN exposes `POST /api/v1/analytics/metrics/query` (OData).
-The frontend does not use it directly. Screen-specific view endpoints are proposed
-on top as thin compositions over the OData/ClickHouse layer for three reasons:
+The following decisions from DESIGN.md are accepted in full:
 
-1. **Pre-aggregated visual positioning** — bullet chart metrics require `bar_left_pct`,
-   `median_left_pct`, and `bar_width_pct` computed server-side from P5/P50/P95
-   distribution data. This data is not available to the client.
+| Topic | Accepted approach |
+|---|---|
+| Query endpoint | `POST /api/v1/analytics/metrics/query` — OData query over seeded metric definitions |
+| Query paradigm | OData `$filter`, `$orderby`, `$select`, cursor pagination — per DNA REST conventions |
+| Date params | Date filtering via OData `$filter` (e.g. `metric_date ge '...' and metric_date lt '...'`); FE maps period labels to ranges |
+| Auth | `Authorization: Bearer <token>` only; `insight_tenant_id` extracted from JWT |
+| Team scoping | `org_unit_id` in OData `$filter`; **backend validates access** via AuthZEN PolicyEnforcer (see security note below) |
+| Person filter | Frontend sends Insight `person_ids` (UUIDs); backend resolves to source aliases |
+| Response shape | `{ items: Row[], page_info: { has_next, cursor } }` |
+| Errors | RFC 9457 Problem Details |
+| Metric management | CRUD via `POST/PUT/DELETE /api/v1/analytics/metrics` — Tenant Admin only |
 
-2. **Single RTT per screen** — each view screen needs 15–40 fields in one response.
-   OData would require multiple queries and client-side joins that break on auth boundaries.
+**Security note — IDOR on `org_unit_id`:**
+Accepting `org_unit_id` from the request body requires a backend authorization check:
+the query engine must verify that the authenticated user's AccessScope includes the
+requested org unit before executing the query. Trusting the client-supplied UUID alone
+while only validating `insight_tenant_id` from JWT would allow any user within a tenant
+to query any team's data by guessing or enumerating UUIDs.
 
-3. **Config co-location** — `TeamViewConfig` (alert thresholds, column thresholds)
-   must travel with the data so the frontend remains fully data-driven with no
-   hardcoded threshold values.
+**Multi-period queries for delta computation:**
+The IC Dashboard requires current and previous period values to display deltas (e.g.
+"PR cycle time: 18h, ↓ 3h vs last month"). OData does not support multi-period queries
+natively, so the frontend issues **two parallel requests** to the same metric with
+different date ranges in `$filter`:
 
-The view endpoints are stateless — they accept `period` and return a fully computed
-snapshot. The backend implements them as query plans over existing Silver/Gold ClickHouse
-tables.
+```
+Request 1: $filter=person_id eq 'uuid-1' and metric_date ge '2026-03-01' and metric_date lt '2026-04-01'
+Request 2: $filter=person_id eq 'uuid-1' and metric_date ge '2026-02-01' and metric_date lt '2026-03-01'
+```
+
+This is acceptable for ClickHouse given the lightweight aggregated query shapes
+(one row per person per period). The frontend computes deltas client-side from the
+two responses.
+
+### Remaining discrepancies with upstream DESIGN.md
+
+This document maps frontend needs to the `Metric` entity and `POST /metrics/query`
+endpoint from DESIGN.md. The following discrepancies still require clarification:
+
+| Topic | This document | Upstream DESIGN.md | Resolution needed |
+|---|---|---|---|
+| Metric `query_ref` semantics | Each metric below defines a multi-column ClickHouse SQL as `query_ref`; the query endpoint executes it with OData filters applied | `Metric.query_ref` type is `String` but its runtime semantics are unspecified | Confirm `query_ref` holds ClickHouse SQL executed by the query engine, and that `POST /metrics/query` accepts a metric ID to select which `query_ref` to run |
+| Stats / percentiles | §7 Q1 proposes a `/stats` extension for P5/P50/P95 | No stats endpoint in DESIGN.md | Propose addition or find alternative approach |
+| Alert rules | Frontend needs threshold CRUD | Alerts Service at `/api/v1/alerts/rules` (separate microservice) | Frontend queries Alerts Service directly, not Analytics API |
+| Data availability | Proposed inline in query response (see §8) | Connector Manager: `GET /api/v1/connectors/connections/{id}/status` | Frontend may need to fetch `data_availability` from Connector Manager separately |
+| Person profile | §4.6 proposes a seeded metric | Identity Service: `GET /api/v1/identity/persons/{id}` | May use Identity Service directly; no analytics metric needed |
+
+---
+
+**Previously proposed but dropped:**
+
+- ~~`X-Tenant-ID` header~~ — tenant from JWT only (DESIGN.md §4.1)
+- ~~`period=week|month|quarter|year` enum~~ — replaced by date ranges in OData `$filter`
+- ~~Per-screen hardcoded endpoints~~ (`/views/executive`, `/views/team`) — replaced by metric UUIDs
+- ~~Custom `View` entity~~ — mapped to `Metric` entries from DESIGN.md §3.1
+- ~~JSON body `{ filters: {...}, order_by, limit }`~~ — replaced by OData `$filter` / `$orderby` / `$top`
+- ~~`periods` array for multi-period delta~~ — replaced by two parallel OData requests
+- ~~`status: good|warn|bad` computed by backend~~ — frontend computes from thresholds (see §6)
+- ~~`trend_label` string from backend~~ — frontend computes from multi-period delta (see §6)
 
 ---
 
 ## 3. Data Sources Inventory
 
+Source table annotations appear as `[source]` comments in metric definitions (§4).
+
 | Source | Silver Table | Status | Connector PR |
 |---|---|---|---|
 | GitHub | `class_git_commits`, `class_git_pull_requests`, `class_git_pull_requests_reviewers` | ✓ available | #57 merged |
-| Bitbucket Cloud | same `class_git_*` tables (data_source discriminator) | ⚠ in progress | #58 draft |
+| Bitbucket Cloud | same `class_git_*` tables (`data_source` discriminator) | ⚠ in progress | #58 draft |
 | Bitbucket Server | same `class_git_*` tables | ⚠ configured | — |
 | Claude Team / Code | `class_ai_dev_usage` | ✓ available | #50 merged |
 | Cursor | `class_ai_dev_usage` | ✓ available | merged |
@@ -73,306 +129,669 @@ tables.
 | Zoom | `class_comms_events` | ✓ available | #61 merged |
 | M365 | `class_comms_events` | ✓ available | merged |
 | Slack | `class_comms_events` | ✓ available | #48 merged |
-| Jira | `class_tasks` (TBD) | ⚠ pending | #62 open |
-| GitHub Actions (CI) | `class_ci_runs` (proposed) | ❌ no connector | see §8 |
+| Jira | `class_tasks` (TBD schema) | ⚠ pending | #62 open |
+| GitHub Actions (CI) | `class_ci_runs` (proposed) | ❌ no connector | see §9 |
 
 ---
 
-## 4. Endpoints
+## 4. Required Metric Definitions
 
-### 4.1 Executive View
+These are the `Metric` entries that need to be seeded into the Analytics API MariaDB catalog.
+Each metric has a stable UUID assigned at seed time. The frontend references metrics by UUID
+via `POST /api/v1/analytics/metrics/query`.
 
+Each definition below specifies:
+- **`query_ref`** — conceptual ClickHouse SQL that the query engine executes
+- **Row shape** — TypeScript type of each returned `items[]` element
+- **OData filters** — example `$filter` / `$orderby` expressions the frontend will send
+
+### 4.1 Executive Summary Metric
+
+**Purpose:** Per-team aggregate row for the Executive screen team table and KPI cards.
+
+**`query_ref`** (conceptual — actual ClickHouse SQL defined by backend):
+
+```sql
+SELECT
+  org_unit_id,                                              -- [identity] org_units.id
+  org_unit_name,                                            -- [identity] org_units.name
+  COUNT(DISTINCT person_id) AS headcount,                   -- [hr] class_people WHERE active
+  COUNT(task_id) FILTER (WHERE done AND type != 'Bug')
+    AS tasks_closed,                                        -- [tasks] class_tasks — null until PR #62
+  COUNT(task_id) FILTER (WHERE done AND type  = 'Bug')
+    AS bugs_fixed,                                          -- [tasks] class_tasks — null until PR #62
+  AVG(CASE WHEN status = 'success' THEN 100 ELSE 0 END)
+    AS build_success_pct,                                   -- [ci]    class_ci_runs — null until §9
+  AVG(focus_time_pct)       AS focus_time_pct,              -- [comms] class_comms_events
+  COUNT(DISTINCT person_id) FILTER (WHERE ai_active)
+    * 100.0 / COUNT(DISTINCT person_id) AS ai_adoption_pct, -- [ai-code] class_ai_dev_usage
+  SUM(ai_lines_added) * 100.0 / NULLIF(SUM(total_lines),0)
+    AS ai_loc_share_pct,                                    -- [ai-code] class_ai_dev_usage
+  AVG(pr_cycle_time_h) AS pr_cycle_time_h                   -- [git]   class_git_pull_requests
+FROM ...
+WHERE org_unit_id = ?   -- required filter: team scoping
+  AND date >= ?         -- required filter: date_from
+  AND date <  ?         -- required filter: date_to
+GROUP BY org_unit_id, org_unit_name
 ```
-GET /api/v1/analytics/views/executive?period={week|month|quarter|year}
-```
 
-Returns org-wide team table with KPI cards. One request per period change.
-
-**Response shape: `ExecViewData`**
+**Row shape** (one row per team):
 
 ```ts
-type ExecTeamRow = {
-  team_id:            string;         // [identity]  org_units.id
-  team_name:          string;         // [identity]  org_units.name
-  headcount:          number;         // [hr]        COUNT(class_people WHERE org_unit AND active)
-  tasks_closed:       number | null;  // [tasks]     COUNT(class_tasks WHERE done AND type!='Bug') — null until PR #62
-  bugs_fixed:         number | null;  // [tasks]     COUNT(class_tasks WHERE done AND type='Bug')  — null until PR #62
-  build_success_pct:  number | null;  // [ci]        successful_runs/total_runs*100 — null until CI connector
-  focus_time_pct:     number;         // [comms]     (work_h - meeting_h) / work_h * 100
-  ai_adoption_pct:    number;         // [ai-code]   active_ai_users / headcount * 100
-  ai_loc_share_pct:   number;         // [ai-code]   SUM(ai_lines_added) / total_loc * 100
-  pr_cycle_time_h:    number;         // [git]       AVG(merged_at - created_at) in hours
-  status:             'good' | 'warn' | 'bad';  // computed from ExecViewConfig.column_thresholds
-};
-
-type OrgKpis = {
-  avgBuildSuccess:    number | null;  // [ci]        null until CI connector
-  avgAiAdoption:      number;         // [ai-code]
-  avgFocus:           number;         // [comms]
-  bugResolutionScore: number | null;  // [tasks]     bugs_fixed / (bugs_opened + 1) * 100 — null until PR #62
-  prCycleScore:       number;         // [git]       score derived from AVG(pr_cycle_time_h) vs threshold
-};
-
-type ExecViewConfig = {
-  column_thresholds: Array<{ metric_key: string; threshold: number }>;
-  // stored in Analytics API MariaDB (Dashboard entity)
-};
-
-type ExecViewData = {
-  teams:             ExecTeamRow[];
-  orgKpis:           OrgKpis;
-  config:            ExecViewConfig;
-  data_availability: DataAvailability;  // see §6
+type ExecSummaryRow = {
+  org_unit_id:        string;
+  org_unit_name:      string;
+  headcount:          number;
+  tasks_closed:       number | null;   // null until PR #62
+  bugs_fixed:         number | null;   // null until PR #62
+  build_success_pct:  number | null;   // null until CI connector
+  focus_time_pct:     number;
+  ai_adoption_pct:    number;
+  ai_loc_share_pct:   number;
+  pr_cycle_time_h:    number;
 };
 ```
+
+**OData query from frontend:**
+
+```
+POST /api/v1/analytics/metrics/query
+
+$filter=metric_date ge '2026-03-01' and metric_date lt '2026-04-01'
+$orderby=org_unit_name asc
+$top=100
+```
+
+> **Note on team scoping (reviewer comment):** The frontend adds
+> `org_unit_id eq 'uuid'` to `$filter` when showing a single team, or omits it when
+> the user has org-wide visibility (Executive screen). The AuthZEN PolicyEnforcer
+> adds `org_unit_id IN (...)` constraints from the user's AccessScope automatically.
 
 ---
 
-### 4.2 Team View
+### 4.2 Team Member Metric
 
+**Purpose:** Per-person rows for the Team screen member table and bullet benchmark sections.
+The frontend also derives three team KPI cards (`at_risk_count`, `focus_gte_60`,
+`not_using_ai`) from these rows — no separate aggregate metric needed.
+
+**`query_ref`** (conceptual):
+
+```sql
+SELECT
+  person_id,                                                -- [identity]
+  display_name,                                             -- [hr]   class_people
+  -- seniority excluded: see §7, open question #4
+  dev_time_h,                                               -- [comms] work_h - meeting_h
+  prs_merged,                                               -- [git]   COUNT(class_git_pull_requests WHERE merged)
+  build_success_pct,                                        -- [ci]    null until §9
+  focus_time_pct,                                           -- [comms]
+  ai_tools,                                                 -- [ai-code] ARRAY_AGG(DISTINCT source)
+  ai_loc_share_pct,                                         -- [ai-code]
+  tasks_closed,                                             -- [tasks] 0 until PR #62
+  bugs_fixed                                                -- [tasks] 0 until PR #62
+FROM ...
+WHERE org_unit_id = ?   -- required: team scoping (passed by FE — not inferred from JWT)
+  AND date >= ?
+  AND date <  ?
 ```
-GET /api/v1/analytics/views/team?period={week|month|quarter|year}
-```
 
-Returns per-person member table, bullet benchmark sections, hero KPI strip,
-and config. Team is resolved from the authenticated user's `org_unit_id`.
-
-**Response shape: `TeamViewData`**
+**Row shape:**
 
 ```ts
-type TeamMember = {
-  person_id:          string;         // [identity]
-  period:             PeriodValue;
-  name:               string;         // [hr]   class_people.display_name
-  seniority:          string;         // [hr]   custom_str_attrs['seniority'] or job_title mapping
-  tasks_closed:       number;         // [tasks] 0 until PR #62
-  bugs_fixed:         number;         // [tasks] 0 until PR #62
-  dev_time_h:         number;         // [comms] work_h - SUM(meeting_duration / 3600)
-  prs_merged:         number;         // [git]
-  build_success_pct:  number | null;  // [ci]   null until CI connector
-  focus_time_pct:     number;         // [comms]
-  ai_tools:           string[];       // [ai-code] ARRAY_AGG(DISTINCT source)
-  ai_loc_share_pct:   number;         // [ai-code]
-  trend_label?:       string;         // [git]  rolling comparison, e.g. "3 months declining"
-};
-
-type TeamKpi = {
-  metric_key: string;
-  label:      string;
-  value:      string;
-  unit:       string;
-  sublabel?:  string;
-  chipLabel?: string;
-  status:     'good' | 'warn' | 'bad';
-  section:    string;
-};
-
-// KPI derivation (backend computes from members + config):
-//   at_risk_count  = COUNT(members) WHERE any alert_threshold triggered
-//   focus_gte_60   = COUNT(members) WHERE focus_time_pct >= 60
-//   not_using_ai   = COUNT(members) WHERE ai_tools IS EMPTY
-//   avg_pr_cycle   = AVG(pr_cycle_time_h) across team
-//   total_loc      = SUM(additions - deletions FROM class_git_commits WHERE author IN team)
-
-type AlertThreshold = {
-  metric_key: string;
-  trigger:    number;   // at-risk if value < trigger
-  bad:        number;   // 'bad' severity if value < bad
-  reason:     string;
-};
-
-type ColumnThreshold = {
-  metric_key:       string;
-  good:             number;
-  warn:             number;
-  higher_is_better: boolean;
-};
-
-type TeamViewConfig = {
-  alert_thresholds:  AlertThreshold[];   // drives "Attention Needed" section
-  column_thresholds: ColumnThreshold[];  // drives MembersTable column coloring
-  // stored in Analytics API MariaDB; returned with view response
-};
-
-type TeamViewData = {
-  teamName:          string;
-  teamKpis:          TeamKpi[];
-  members:           TeamMember[];
-  bulletSections:    BulletSection[];
-  config:            TeamViewConfig;
-  data_availability: DataAvailability;
+type TeamMemberRow = {
+  person_id:         string;
+  display_name:      string;
+  dev_time_h:        number;
+  prs_merged:        number;
+  build_success_pct: number | null;
+  focus_time_pct:    number;
+  ai_tools:          string[];
+  ai_loc_share_pct:  number;
+  tasks_closed:      number;
+  bugs_fixed:        number;
 };
 ```
 
-**Bullet section positions** are precomputed from org-unit P5/P50/P95 distribution:
-- `bar_left_pct   = (value - range_min) / (range_max - range_min) * 100`
-- `median_left_pct = (median - range_min) / (range_max - range_min) * 100`
+**Frontend-derived team KPI strip** (computed from member rows, no extra query):
+
+| KPI | Computation |
+|---|---|
+| `at_risk_count` | `COUNT` where any alert threshold triggered |
+| `focus_gte_60` | `COUNT` where `focus_time_pct >= 60` |
+| `not_using_ai` | `COUNT` where `ai_tools.length === 0` |
+
+**OData query from frontend:**
+
+```
+POST /api/v1/analytics/metrics/query
+
+$filter=metric_date ge '2026-03-01' and metric_date lt '2026-04-01' and org_unit_id eq 'uuid-of-team'
+$orderby=display_name
+$top=200
+```
 
 ---
 
-### 4.3 IC Dashboard
+### 4.3 IC (Individual Contributor) Metric
 
-```
-GET /api/v1/analytics/views/ic/{personId}?period={week|month|quarter|year}
+**Purpose:** Aggregated KPI values for the IC Dashboard screen for a single person.
+
+**`query_ref`** (conceptual):
+
+```sql
+SELECT
+  person_id,
+  SUM(clean_loc)          AS loc,                -- [git]     class_git_commits
+  SUM(ai_lines_added) * 100.0 / NULLIF(SUM(clean_loc + ai_lines_added), 0)
+                          AS ai_loc_share_pct,   -- [ai-code]
+  COUNT(pr_id)            AS prs_merged,         -- [git]
+  AVG(pr_cycle_time_h)    AS pr_cycle_time_h,    -- [git]
+  AVG(focus_time_pct)     AS focus_time_pct,     -- [comms]
+  COUNT(task_id) FILTER (WHERE done AND type != 'Bug') AS tasks_closed, -- [tasks]
+  COUNT(task_id) FILTER (WHERE done AND type  = 'Bug') AS bugs_fixed,   -- [tasks]
+  AVG(CASE WHEN status = 'success' THEN 100 ELSE 0 END)
+                          AS build_success_pct,  -- [ci]
+  SUM(session_count)      AS ai_sessions         -- [ai-code] class_ai_dev_usage
+FROM ...
+WHERE person_id = ?   -- required: person scoping
+  AND date >= ?
+  AND date <  ?
 ```
 
-Returns individual contributor data for the given person.
+**Row shape** (one row per person per period):
 
 ```ts
-type IcKpi = {
-  period:      PeriodValue;
-  metric_key:  string;
-  label:       string;
-  value:       string;
-  unit:        string;
-  sublabel:    string;    // data source label, e.g. "Bitbucket"
-  description?: string;
-  delta:       string;    // vs. previous period, e.g. "+12%"
-  delta_type:  'good' | 'warn' | 'bad' | 'neutral';
-};
-
-// IcKpi metric_key catalog:
-//   loc               [git]      SUM(additions - deletions FROM class_git_commits)
-//   ai_loc_share_pct  [ai-code]  SUM(lines_added) / loc * 100
-//   prs_merged        [git]      COUNT(class_git_pull_requests WHERE merged)
-//   pr_cycle_time_h   [git]      AVG(merged_at - created_at) in hours
-//   focus_time_pct    [comms]    (work_h - meeting_h) / work_h * 100
-//   tasks_closed      [tasks]    ⚠ pending — 0 until PR #62
-//   bugs_fixed        [tasks]    ⚠ pending — 0 until PR #62
-//   build_success_pct [ci]       ❌ missing — null until CI connector
-//   ai_sessions       [ai-code]  SUM(session_count FROM class_ai_dev_usage)
-
-type LocDataPoint     = { label: string; aiLoc: number; codeLoc: number; specLines: number };
-type DeliveryDataPoint = { label: string; commits: number; prsMerged: number; tasksDone: number };
-
-type IcChartsData = {
-  locTrend:      LocDataPoint[];      // see §7 for period granularity
-  deliveryTrend: DeliveryDataPoint[];
-};
-
-type TimeOffNotice = {
-  days:        number;
-  dateRange:   string;
-  bambooHrUrl: string;   // [hr-leave]
-};
-
-type IcDashboardData = {
-  person:            PersonData;
-  kpis:              IcKpi[];
-  bulletMetrics:     BulletMetric[];
-  charts:            IcChartsData;
-  timeOffNotice:     TimeOffNotice | null;
-  drills:            Record<string, DrillData>;
-  data_availability: DataAvailability;
+type IcSummaryRow = {
+  person_id:         string;
+  loc:               number;
+  ai_loc_share_pct:  number;
+  prs_merged:        number;
+  pr_cycle_time_h:   number;
+  focus_time_pct:    number;
+  tasks_closed:      number;
+  bugs_fixed:        number;
+  build_success_pct: number | null;
+  ai_sessions:       number;
 };
 ```
+
+For **chart trend data** see §4.5 — separate time-series metrics are required.
+
+For **drill tables**, see §4.8.
+
+> **Note on `date_from`/`date_to` and drill (CodeRabbit comment, line 275):**
+> All drill queries include `date_from`/`date_to` as required filters.
+> Previously the IC drill was missing this — now explicit.
 
 ---
 
-### 4.4 Drill Endpoints
+### 4.4 Org Aggregate (FE-Computed)
 
-```
-GET /api/v1/analytics/views/ic/{personId}/drill/{drillId}
-GET /api/v1/analytics/views/team/drill/{drillId}?period={period}
+**Purpose:** Org-wide KPI cards on the Executive screen (`avgBuildSuccess`, `avgAiAdoption`,
+`avgFocus`, `bugResolutionScore`, `prCycleScore`).
+
+These are aggregates of team aggregates and can be computed on the frontend from the
+rows returned by §4.1 (Executive Summary Metric queried without an `org_unit_id` filter).
+No separate backend metric is needed.
+
+**Frontend computation from `ExecSummaryRow[]`:**
+
+| KPI | Computation |
+|---|---|
+| `avgBuildSuccess` | `AVG(build_success_pct)` — `null` if all rows have `null` |
+| `avgAiAdoption` | `AVG(ai_adoption_pct)` |
+| `avgFocus` | `AVG(focus_time_pct)` |
+| `bugResolutionScore` | `null` until Jira connector ships (tasks unavailable) |
+| `prCycleScore` | `AVG(pr_cycle_time_h)` displayed directly — score formula TBD |
+
+---
+
+### 4.5 IC Chart Trend Metrics
+
+**Purpose:** Time-series chart data for the IC Dashboard screen.
+The IC screen shows two charts: LOC trend and Delivery trend.
+These require rows grouped by date bucket (week or month), **not** a single aggregate —
+so they need separate seeded metrics with a `GROUP BY date_bucket` in `query_ref`.
+
+#### LOC Trend Metric (per person, per time bucket)
+
+```sql
+SELECT
+  toStartOfWeek(commit_date) AS date_bucket,         -- granularity per UI period
+  SUM(ai_lines_added)        AS ai_loc,              -- [ai-code] class_ai_dev_usage
+  SUM(clean_lines)           AS code_loc,            -- [git]     class_git_commits
+  SUM(spec_lines)            AS spec_lines            -- [git]     class_git_commits (if tracked)
+FROM ...
+WHERE person_id = ?
+  AND commit_date >= ?
+  AND commit_date <  ?
+GROUP BY date_bucket
+ORDER BY date_bucket
 ```
 
-Returns tabular row data for a single metric. The drill table columns and
-rows are fully determined by the backend — the frontend renders them generically.
+**Row shape:**
 
 ```ts
-type DrillData = {
-  title:    string;
-  source:   string;       // e.g. "Jira", "Bitbucket"
-  srcClass: string;       // tailwind bg class for the source badge
-  value:    string;       // formatted aggregate, e.g. "12" or "94%"
-  filter:   string;       // human-readable filter description shown to user
-  columns:  string[];
-  rows:     Array<Record<string, string | number>>;
+type LocTrendRow = {
+  date_bucket: string;   // ISO date — FE formats as chart label
+  ai_loc:      number;
+  code_loc:    number;
+  spec_lines:  number;
 };
 ```
 
----
+#### Delivery Trend Metric (per person, per time bucket)
 
-## 5. Shared Types
+```sql
+SELECT
+  toStartOfWeek(activity_date) AS date_bucket,
+  COUNT(DISTINCT commit_sha)   AS commits,     -- [git]   class_git_commits
+  COUNT(DISTINCT pr_id)        AS prs_merged,  -- [git]   class_git_pull_requests WHERE merged
+  COUNT(DISTINCT task_id)      AS tasks_done   -- [tasks] class_tasks WHERE done
+FROM ...
+WHERE person_id = ?
+  AND activity_date >= ?
+  AND activity_date <  ?
+GROUP BY date_bucket
+ORDER BY date_bucket
+```
+
+**Row shape:**
 
 ```ts
-type PeriodValue = 'week' | 'month' | 'quarter' | 'year';
-
-type PersonData = {
-  person_id: string;   // [identity]
-  name:      string;   // [hr]
-  role:      string;   // [identity]
-  seniority: string;   // [hr]
+type DeliveryTrendRow = {
+  date_bucket: string;
+  commits:     number;
+  prs_merged:  number;
+  tasks_done:  number;
 };
+```
 
-type BulletMetric = {
-  period:          PeriodValue;
-  section:         string;
-  metric_key:      string;
-  label:           string;
-  sublabel?:       string;
-  value:           string;
-  unit:            string;
-  range_min:       string;       // P5 of org-unit distribution
-  range_max:       string;       // P95 of org-unit distribution
-  median:          string;       // P50
-  median_label:    string;
-  bar_left_pct:    number;       // precomputed
-  bar_width_pct:   number;       // precomputed
-  median_left_pct: number;       // precomputed
-  status:          'good' | 'warn' | 'bad';
-  drill_id:        string;       // empty string if no drill
+> **Note on SQL dialect:** The `query_ref` in Metric definitions is **ClickHouse SQL**,
+> not MariaDB SQL. MariaDB stores only the metric metadata (name, description, UUID,
+> `query_ref` as text). The query engine executes the stored SQL against ClickHouse.
+> Functions like `toStartOfWeek`, `quantile`, `ARRAY_AGG` are ClickHouse-specific and
+> must not be validated or parsed by MariaDB. Metric authors must write ClickHouse-compatible
+> SQL in the `query_ref` field.
+
+> **Note on granularity:** The FE selects date ranges via OData `$filter` based on the UI
+> period (week → last 7 days, month → last 4 weeks, quarter → last 13 weeks, year → last 12
+> months). The metric's `toStartOfWeek` / `toStartOfMonth` grouping in `query_ref`
+> determines point density. If the query engine supports a configurable `GROUP BY`
+> expression per metric, the same metric UUID can serve different granularities.
+> Otherwise two metric variants (weekly/monthly) may be needed.
+
+---
+
+### 4.6 Person Profile (Identity Service)
+
+**Purpose:** Person header on the IC Dashboard (name, role, seniority).
+
+> **Preferred source:** The Identity Service exposes
+> `GET /api/v1/identity/persons/{id}` (DESIGN.md §3.3) which serves this data directly.
+> The frontend should call Identity Service for person profile — no seeded analytics
+> metric needed. The `query_ref` below is kept only as a fallback reference for the
+> data shape.
+
+```sql
+SELECT
+  person_id,
+  display_name,           -- [hr] class_people.display_name
+  role,                   -- [hr] class_people.job_title or role mapping
+  seniority               -- [hr] class_people.custom_str_attrs['seniority'] — see §7 Q4
+FROM class_people
+WHERE person_id = ?
+LIMIT 1
+```
+
+**Row shape:**
+
+```ts
+type PersonProfileRow = {
+  person_id:  string;
+  display_name: string;
+  role:       string;
+  seniority:  string | null;   // null if not configured — FE renders nothing
 };
-
-type BulletSection = { id: string; title: string; metrics: BulletMetric[] };
 ```
 
 ---
 
-## 6. Data Availability Envelope
+### 4.7 Time Off Notice Metric
 
-Each view response includes a `data_availability` object so the frontend
+**Purpose:** Upcoming time-off banner on the IC Dashboard.
+Sourced from BambooHR leave records in `class_people`.
+
+```sql
+SELECT
+  person_id,
+  leave_start_date,
+  leave_end_date,
+  leave_days,
+  bamboohr_leave_url
+FROM class_people_leave   -- or equivalent leave table
+WHERE person_id = ?
+  AND leave_start_date >= {date_from:Date}  -- passed by FE as today's UTC date
+ORDER BY leave_start_date
+LIMIT 1
+```
+
+> **Note:** Do not use ClickHouse `today()` — it returns the server's local date which
+> may differ from the client's UTC date. The frontend passes `date_from` as today's
+> UTC date (`new Date().toISOString().slice(0, 10)`).
+
+**Row shape** (`null` response means no upcoming leave):
+
+```ts
+type TimeOffRow = {
+  person_id:          string;
+  leave_start_date:   string;
+  leave_end_date:     string;
+  leave_days:         number;
+  bamboohr_leave_url: string;
+} | null;
+```
+
+> **Note:** If `class_people` does not carry leave records in V1, this metric can return
+> empty results and the IC screen will simply not render the notice banner.
+
+---
+
+### 4.8 Drill Metrics
+
+A drill is a paginated row-level breakdown of a single KPI for a specific person or team.
+The frontend triggers a drill when a user clicks a metric value. Each drill maps to a
+pre-defined `Metric` entry in the catalog.
+
+Fields per drill are fixed and determined by the Silver table being queried.
+The frontend renders them generically (column list + row array — no field-specific code).
+
+**Response shape** (same envelope as all metric queries):
+
+```json
+{
+  "items": [
+    { "pr_title": "Fix auth middleware", "merged_at": "2026-03-14T11:00:00Z", "cycle_time_h": 18.5 }
+  ],
+  "page_info": { "has_next": true, "cursor": "eyJ..." }
+}
+```
+
+All drill queries require `metric_date` range in OData `$filter`.
+
+---
+
+#### IC Drills (scoped to `person_id`)
+
+| Drill ID | Title | Source | Silver Table | Columns |
+|---|---|---|---|---|
+| `commits` | Commits | GitHub / Bitbucket | `class_git_commits` | Commit SHA, Repository, +LOC, -LOC, Date |
+| `pull-requests` | Pull Requests | GitHub / Bitbucket | `class_git_pull_requests` | PR title, Repository, Status, Cycle Time |
+| `reviews` | Code Reviews Given | GitHub / Bitbucket | `class_git_pull_requests_reviewers` | PR title, Author, Outcome, Time to Review |
+| `builds` | Build Results | CI | `class_ci_runs` *(pending §9)* | Build ID, Branch, Status, Duration |
+| `tasks-completed` | Tasks Completed | Jira | `class_tasks` *(pending PR #62)* | Task key, Story Points, Dev Time, Closed Date |
+| `cycle-time` | Task Development Time | Jira | `class_tasks` | Task key, Story Points, Dev Time, Status |
+| `task-reopen` | Reopened Tasks | Jira | `class_tasks` | Task key, Reopen Reason, Reopened At, Resolved At |
+| `bugs-fixed` | Bugs Fixed | Jira | `class_tasks` | Bug key, Priority, Fix Time, Closed Date |
+
+---
+
+#### Team Drills (scoped to `org_unit_id`)
+
+| Drill ID | Title | Source | Silver Table | Columns |
+|---|---|---|---|---|
+| `team-members` | Team Members Overview | Jira + GitHub/Bitbucket | `class_git_*`, `class_tasks`, `class_people` | Name, Tasks, Dev Time, PRs, Build %, Focus %, AI LOC % |
+| `team-tasks` | Tasks Closed per Developer | Jira | `class_tasks` | Name, Tasks Closed, Story Points, Avg SP/Task, vs Team |
+| `team-dev-time` | Task Development Time per Member | Jira | `class_tasks` | Name, Dev Time, vs Team avg, vs Org avg, Tasks Sampled |
+| `team-prs` | Pull Requests Merged per Developer | GitHub / Bitbucket | `class_git_pull_requests` | Name, PRs Merged, Avg Cycle Time, Avg Size (LOC), Reviews Given |
+| `team-pr-cycle` | Pull Request Cycle Time per Member | GitHub / Bitbucket | `class_git_pull_requests` | Name, Cycle Time, Pickup Time, Review Time, vs Org avg |
+| `team-bugs` | Bugs Fixed per Member | Jira | `class_tasks` | Name, Bugs Fixed, Avg Fix Time, Reopened, Reopen Rate |
+| `team-build` | Build Success Rate per Member | CI | `class_ci_runs` *(pending §9)* | Name, Build %, Passed, Failed |
+| `team-focus` | Focus Time per Member | Calendar / M365 | `class_comms_events` | Name, Focus %, Focus Hours, Meeting Hours |
+| `team-ai-active` | AI Tool Adoption by Member | Cursor + Claude Code | `class_ai_dev_usage` | Name, Tools Active, AI LOC Share, Sessions per tool |
+| `team-ai-loc` | AI LOC Share per Member | Cursor + Claude Code | `class_ai_dev_usage` | Name, AI LOC %, AI Lines, Clean LOC, Lines per tool |
+| `team-reopen` | Task Reopen Rate per Member | Jira | `class_tasks` | Name, Reopen Rate, Reopened, Total Closed, Top Reason |
+
+---
+
+> **Note on drill discovery:** The frontend knows which drill IDs exist per KPI via the
+> `drill_id` field returned in bullet metric objects. An empty `drill_id` means no drill
+> is available for that KPI. The backend does not need to expose a drill catalog endpoint —
+> the mapping is part of the metric seed data.
+
+> **Note on Team Drill JOIN complexity:** Team drills like `team-prs` and `team-tasks`
+> require filtering pull requests or tasks by org unit membership. A runtime JOIN between
+> `class_git_pull_requests` and `class_people` in ClickHouse is expensive at scale.
+> The Silver dbt models for `class_git_*` and `class_tasks` **must pre-populate
+> `org_unit_id`** from `class_people` at transformation time, so drill queries become
+> simple `WHERE org_unit_id = ?` without any JOIN. Confirm this is the case before
+> implementing Team Drill metric definitions.
+
+> **Note on cursor pagination with aggregated sort:** Drill metrics support sorting by
+> aggregated fields (e.g. sort `team-prs` by `PRs Merged` via `$orderby`). Cursor-based
+> pagination must be stable under this sort — confirm the query engine supports keyset
+> pagination on computed/aggregated columns, not just on raw row keys.
+
+---
+
+## 5. Screen → Metric Mapping
+
+The frontend will maintain a mapping of screen name → metric UUID:
+
+| Screen | Metrics / services used | Query count |
+|---|---|---|
+| Executive | §4.1 Exec Summary Metric (all teams) | 1 |
+| Executive KPI cards | Derived from §4.1 rows on FE (§4.4) | 0 extra |
+| Team members table | §4.2 Team Member Metric | 1 |
+| Team KPI strip | Derived from §4.2 rows on FE | 0 extra |
+| IC Dashboard KPIs | §4.3 IC Summary Metric × 2 periods (current + previous) | 2 |
+| IC LOC chart | §4.5 LOC Trend Metric | 1 |
+| IC Delivery chart | §4.5 Delivery Trend Metric | 1 |
+| IC person header | Identity Service: `GET /api/v1/identity/persons/{id}` | 1 |
+| IC time-off notice | §4.7 Time Off Notice Metric | 1 |
+| Any drill-down | §4.8 Drill Metric (paginated) | 1 per open drill |
+
+**Date range mapping on the frontend** (OData `$filter` date boundaries):
+
+| UI label | `$filter` expression |
+|---|---|
+| Week | `metric_date ge '2026-04-07' and metric_date lt '2026-04-14'` |
+| Month | `metric_date ge '2026-04-01' and metric_date lt '2026-05-01'` |
+| Quarter | `metric_date ge '2026-01-01' and metric_date lt '2026-04-01'` |
+| Year | `metric_date ge '2026-01-01' and metric_date lt '2027-01-01'` |
+
+**Timezone contract:** All date values in `$filter` are **UTC dates** in `YYYY-MM-DD`
+format. The backend treats `2026-04-07` as `2026-04-07T00:00:00Z` — `2026-04-07T23:59:59Z`.
+The frontend computes date boundaries in UTC regardless of the user's local timezone.
+This prevents data loss at day boundaries when team members are in different timezones
+from the server.
+
+---
+
+## 6. Frontend-Computed Fields
+
+The following fields are **removed from backend responsibility** and will be computed
+on the frontend:
+
+| Field | Where previously | Frontend computation |
+|---|---|---|
+| `status: good\|warn\|bad` on `ExecTeamRow` | Backend computed | FE applies column thresholds to raw values |
+| `status` on `TeamKpi` | Backend computed | FE applies threshold config |
+| `trend_label` | Backend string | FE computes delta between two periods (current vs previous query) |
+| `delta` / `delta_type` on `IcKpi` | Backend computed | FE queries two date ranges and computes diff |
+| Bullet chart `bar_left_pct`, `median_left_pct`, `bar_width_pct` | Backend precomputed | See §7 open question #1 |
+| `prCycleScore` in `OrgKpis` | Backend formula unknown | FE displays raw `avg_pr_cycle_time_h`; score formula TBD |
+
+---
+
+## 7. Open Questions
+
+### Open Question 1 — Bullet chart distribution (P5/P50/P95)
+
+The Team and IC screens display bullet charts where the value marker is positioned
+relative to the team/org distribution. This requires P5, P50, and P95 of a given
+column across peers for the same period.
+
+**Decision: backend-computed percentiles only.** Computing percentiles client-side from
+raw rows is not acceptable: for large org units it would transfer significant data
+volumes unnecessarily and waste browser memory.
+
+**Proposed approach:** A dedicated stats metric (or extension to `POST /metrics/query`)
+that returns distribution data. Example request:
+
+```
+POST /api/v1/analytics/metrics/query
+
+metric_id: uuid-of-team-member-stats
+$filter=org_unit_id eq 'uuid-of-team' and metric_date ge '...' and metric_date lt '...'
+$select=focus_time_pct,pr_cycle_time_h
+```
+
+Response:
+
+```json
+{
+  "items": [{
+    "focus_time_pct":  { "p5": 32, "p50": 61, "p95": 84 },
+    "pr_cycle_time_h": { "p5": 8,  "p50": 22, "p95": 48 }
+  }]
+}
+```
+
+ClickHouse's native `quantile(0.05)(...)`, `quantile(0.50)(...)`, `quantile(0.95)(...)`
+handle this in a single query pass.
+
+**Action needed:** Confirm whether `POST /metrics/query` can return aggregate stats
+like this, or if a separate endpoint/metric type is needed. DESIGN.md does not
+currently specify a stats capability.
+
+---
+
+### Open Question 2 — Threshold config management
+
+The frontend needs threshold values to compute `status` locally (per §6). These thresholds
+are per-tenant, configurable by admins.
+
+**Proposed:** A separate config resource, not co-located in query responses:
+
+```http
+GET  /api/v1/analytics/config/thresholds
+POST /api/v1/analytics/config/thresholds
+PUT  /api/v1/analytics/config/thresholds/{id}
+```
+
+**Questions:**
+- Is `TeamViewConfig` part of the Metric/Dashboard definition in MariaDB, or a separate entity?
+- How does the frontend know which threshold set applies to which screen?
+
+---
+
+### Open Question 3 — Alert rule management
+
+Alert rules ("Attention Needed" section) need CRUD. Per upstream DESIGN.md, the Alerts
+Service owns this at a separate path — **not** the Analytics API:
+
+```http
+GET    /api/v1/alerts/rules
+POST   /api/v1/alerts/rules
+PUT    /api/v1/alerts/rules/{id}
+DELETE /api/v1/alerts/rules/{id}
+```
+
+**Questions:**
+- Confirm the frontend should query the Alerts Service base URL for rule CRUD
+  (separate from the Analytics API base URL)
+- Is the rule format in the Alerts Service compatible with the `AlertThreshold` type
+  the frontend currently uses?
+
+---
+
+### Open Question 4 — `seniority` field
+
+**Decision: use `job_title` as-is in V1.** Do not attempt to map or normalize seniority
+levels in the backend. Every company has different grade nomenclature (L1/L2/Senior/G3)
+and building a normalization layer is a separate data transformation task out of scope for
+V1. The `PersonProfileRow.seniority` field (§4.6) should be populated directly from
+`class_people.job_title` with no transformation. The frontend renders it as a plain label
+and handles a null value gracefully (renders nothing).
+
+---
+
+## 8. Data Availability Envelope
+
+Each query response should include a `data_availability` metadata object so the frontend
 can show "Not configured" states instead of misleading zeros.
 
-```ts
-type DataAvailability = {
-  git:   'available' | 'no-connector' | 'syncing';
-  tasks: 'available' | 'no-connector' | 'syncing';
-  ci:    'available' | 'no-connector' | 'syncing';
-  comms: 'available' | 'no-connector' | 'syncing';
-  hr:    'available' | 'no-connector' | 'syncing';
-  ai:    'available' | 'no-connector' | 'syncing';
-};
+> **Source:** The Connector Manager exposes sync status at
+> `GET /api/v1/connectors/connections/{id}/status` (DESIGN.md §3.3). The frontend may
+> need to call this endpoint separately and merge the result with analytics data.
+> Alternatively, the Analytics API could include `data_availability` inline in query
+> responses. **Pending decision — this section describes the desired shape regardless of
+> which service provides it.**
+
+**Desired shape** (whether inline in query response or from Connector Manager):
+
+```json
+{
+  "items": [...],
+  "page_info": { "has_next": false, "cursor": null },
+  "data_availability": {
+    "git":   { "status": "available",    "last_synced_at": "2026-04-09T06:00:00Z" },
+    "tasks": { "status": "no-connector", "last_synced_at": null },
+    "ci":    { "status": "no-connector", "last_synced_at": null },
+    "comms": { "status": "available",    "last_synced_at": "2026-04-09T05:30:00Z" },
+    "hr":    { "status": "available",    "last_synced_at": "2026-04-09T04:00:00Z" },
+    "ai":    { "status": "available",    "last_synced_at": "2026-04-09T06:10:00Z" }
+  }
+}
 ```
 
-Fields from missing/pending sources return:
-- `number | null` fields → `null`
-- `number` fields (no null variant) → `0`
-- `string[]` fields → `[]`
+**Status values:**
 
-When `data_availability.ci = 'no-connector'`, the frontend shows "—" instead
-of `0%` for all CI-sourced metrics.
+| Value | Meaning | Effect on fields |
+|---|---|---|
+| `available` | Connector configured, all sources synced | Fields return real values |
+| `partial` | Connector configured, but not all sources synced (e.g. 9 of 10 repos) | Fields return real values with a coverage warning |
+| `no-connector` | Connector not configured | Affected fields return `null` |
+| `syncing` | Initial full sync in progress — no data yet | Affected fields return `null` |
+
+`partial` prevents misleading `available` when, for example, one GitHub repository
+is still onboarding. The frontend surfaces a banner: "Data may be incomplete —
+not all sources have synced."
+
+**Affected fields when `no-connector` or `syncing`:**
+
+- `tasks`: `tasks_closed`, `bugs_fixed` → `null`
+- `ci`: `build_success_pct` → `null`
+
+**Partial availability (reviewer comment, line 338):**
+
+`syncing` applies only to the **initial full sync** — when a connector is first configured
+and ClickHouse has no data yet for that source. Once any data is present, the status
+returns to `available` even if a reconnect or incremental sync is in progress.
+
+`last_synced_at` lets the frontend show "data through [date]" when a connector
+has not synced recently — for example, if GitHub Actions was disconnected yesterday,
+`git.status = 'available'` but `git.last_synced_at` is 24h old, and the frontend
+can surface a warning banner.
+
+This avoids the scenario of hiding 10 weeks of valid historical data just because
+a short-lived reconnect is happening.
+
+**Scope: `data_availability` is per-org-unit, not per-tenant.**
+If Jira is configured for only 2 of 5 teams, a tenant-global `tasks: no-connector`
+would incorrectly hide task data for the 2 teams that have it. The backend must compute
+`data_availability` in the context of the requested `org_unit_id` (or org-wide scope
+for Executive Summary). An org unit with no Jira project linked should return
+`tasks: no-connector`; one with Jira configured returns `tasks: available`.
 
 ---
 
-## 7. Period Granularity Contract
+## 9. CI Connector Roadmap
 
-Chart data is returned at period-correct granularity. The frontend renders
-`label` as the x-axis key directly — no client-side aggregation.
-
-| `period`  | Points | Labels                          |
-|-----------|--------|---------------------------------|
-| `week`    | 5      | Mon, Tue, Wed, Thu, Fri         |
-| `month`   | 4      | W1, W2, W3, W4                  |
-| `quarter` | 3      | Jan, Feb, Mar (quarter months)  |
-| `year`    | 4      | Q1, Q2, Q3, Q4                  |
-
----
-
-## 8. CI Connector Roadmap
-
-`build_success_pct` returns `null` in v1 — no CI connector exists yet.
-This section proposes the implementation path.
+`build_success_pct` returns `null` in V1 — no CI connector exists yet.
+This section proposes the implementation path for a future release.
 
 ### Proposed `class_ci_runs` Silver table
 
@@ -391,7 +810,7 @@ class_ci_runs (
   started_at       DateTime,
   finished_at      DateTime,
   duration_seconds UInt32,
-  person_id        UUID NULL      -- resolved via identity resolution
+  person_id        UUID NULL      -- resolved via Identity Resolution
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(started_at)
@@ -410,7 +829,7 @@ Add `workflow_runs` stream to the GitHub connector (follow-up to PR #57):
 
 ### Step 2 — Bitbucket Pipelines stream
 
-Add `pipelines` stream to the Bitbucket Cloud connector (add before PR #58 merge):
+Add `pipelines` stream to the Bitbucket Cloud connector (before PR #58 merge):
 
 - Endpoint: `GET /repositories/{workspace}/{repo}/pipelines/`
 - Incremental by `created_on`
@@ -421,6 +840,7 @@ Add `pipelines` stream to the Bitbucket Cloud connector (add before PR #58 merge
 ### Step 3 — dbt Silver model
 
 Create `class_ci_runs` unifying both sources via `union_by_tag`:
+
 - Map `conclusion='success'` / `state.result.name='SUCCESSFUL'` → `status='success'`
 - Map `head_sha` / `target.commit.hash` → `commit_sha`
 
@@ -432,43 +852,83 @@ as `alias_type = 'username'` in `bootstrap_inputs`.
 ### Impact
 
 Once `class_ci_runs` is available:
-- `build_success_pct` changes from `null` to real values in all three views
-- `data_availability.ci` changes from `'no-connector'` to `'available'`
+
+- `build_success_pct` changes from `null` to real values in all metrics
+- `data_availability.ci` changes from `no-connector` to `available`
 - No frontend type changes needed — `number | null` already handles both states
 
 ---
 
-## 9. Implementation Checklist
+## 10. Implementation Checklist
 
-### Backend — view endpoints
+### Open items requiring backend confirmation
 
-- [ ] `GET /views/executive?period=` — ExecViewData
-- [ ] `GET /views/team?period=` — TeamViewData (team resolved from auth context)
-- [ ] `GET /views/ic/{personId}?period=` — IcDashboardData
-- [ ] `GET /views/ic/{personId}/drill/{drillId}` — DrillData
-- [ ] `GET /views/team/drill/{drillId}?period=` — DrillData
-- [ ] Return `data_availability` envelope in all view responses
-- [ ] Store `TeamViewConfig` and `ExecViewConfig` in MariaDB (Dashboard entity)
-- [ ] Return config with each view response (no separate config endpoint)
+- [ ] Confirm `Metric.query_ref` holds ClickHouse SQL executed by the query engine
+- [ ] Confirm `POST /metrics/query` accepts a metric UUID to select which `query_ref` to run
+- [ ] Confirm how `$filter` parameters map to `query_ref` placeholders (OData → ClickHouse bind)
+- [ ] Confirm alert rules owned by Alerts Service (`/api/v1/alerts/rules`) — not Analytics API
+- [ ] Confirm `data_availability` source: inline in query response or from Connector Manager
+- [ ] Confirm person profile from Identity Service (`GET /api/v1/identity/persons/{id}`)
 
-### Backend — Jira connector (unblocks `tasks_closed`, `bugs_fixed`)
+### Backend — Metric Catalog Seeding
+
+- [ ] `POST /api/v1/analytics/metrics` — seed all metric definitions listed below
+- [ ] `POST /api/v1/analytics/metrics/query` — execute with OData `$filter` / `$orderby` / `$top`
+
+**Metrics to seed:**
+
+| Metric | Section | Notes |
+|---|---|---|
+| Exec Summary | §4.1 | Group by org_unit; all teams when no org_unit_id filter |
+| Team Member | §4.2 | Per-person aggregate |
+| IC Summary | §4.3 | Single-person aggregate; queried twice for delta |
+| IC LOC Trend | §4.5 | Time-series, GROUP BY date bucket |
+| IC Delivery Trend | §4.5 | Time-series, GROUP BY date bucket |
+| Time Off Notice | §4.7 | Upcoming leave; empty if not in class_people |
+| IC Drills (×8) | §4.8 | commits, pull-requests, reviews, builds, tasks-completed, cycle-time, task-reopen, bugs-fixed |
+| Team Drills (×11) | §4.8 | team-members, team-tasks, team-dev-time, team-prs, team-pr-cycle, team-bugs, team-build, team-focus, team-ai-active, team-ai-loc, team-reopen |
+
+> **Note:** Person Profile (§4.6) is NOT seeded as a metric — use Identity Service directly.
+
+### Backend — Stats / Percentiles (Open Question 1)
+
+- [ ] Confirm how P5/P50/P95 can be served via `POST /metrics/query` (separate metric or endpoint extension)
+- [ ] If backend: implement `quantile` aggregation in query engine
+
+### Backend — Threshold Config (Open Question 2)
+
+- [ ] Threshold config CRUD (GET/POST/PUT) at `/api/v1/analytics/config/thresholds`
+
+### Backend — Alert Rules (Open Question 3)
+
+- [ ] Confirm Alerts Service CRUD at `/api/v1/alerts/rules`
+- [ ] Verify `AlertRule` format is compatible with frontend's `AlertThreshold` type
+
+### Backend — Jira connector (unblocks `tasks_closed`, `bugs_fixed`) — **P1 priority**
+
+Without task data the Executive Summary (§4.1) and Team Member metric (§4.2) surface
+only Git metrics, which are misleading for management without business delivery context.
 
 - [ ] Confirm `class_tasks` Silver schema with Jira connector author (PR #62)
-- [ ] Add `[tasks]` source tag to Silver model
 - [ ] Switch null → real values once connector ships; set `data_availability.tasks = 'available'`
 
 ### Backend — CI connector (unblocks `build_success_pct`)
 
-- [ ] GitHub Actions stream (§8 Step 1)
-- [ ] Bitbucket Pipelines stream (§8 Step 2)
-- [ ] `class_ci_runs` Silver dbt model (§8 Step 3)
-- [ ] Identity resolution for CI actors (§8 Step 4)
-- [ ] Switch `build_success_pct` null → real values; set `data_availability.ci = 'available'`
+- [ ] GitHub Actions stream (§9 Step 1)
+- [ ] Bitbucket Pipelines stream (§9 Step 2)
+- [ ] `class_ci_runs` Silver dbt model (§9 Step 3)
+- [ ] Identity resolution for CI actors (§9 Step 4)
+- [ ] Switch `build_success_pct` null → real; set `data_availability.ci = 'available'`
 
 ### Frontend — already implemented (insight-front)
 
 - [x] `DataAvailability` type and nullable field types (`number | null`)
-- [x] `data_availability` field on `ExecViewData`, `TeamViewData`, `IcDashboardData`
-- [x] `TeamsTable` / `MembersTable` render `null` as "—"
-- [x] `OrgKpiCards` shows "Not configured" description when `avgBuildSuccess` is null
+- [x] Null-safe rendering in all tables (`null` → "—")
+- [x] `OrgKpiCards` shows "Not configured" when `avgBuildSuccess` is null
 - [x] `METRIC_KEYS` catalog in `types/index.ts`
+- [ ] Build OData query builder (compose `$filter`, `$orderby`, `$top` from UI state)
+- [ ] Switch from period enum to `metric_date` OData `$filter` ranges
+- [ ] Move `status` computation to frontend (apply thresholds to raw values)
+- [ ] Move `delta`/`delta_type` computation to frontend (two parallel requests, diff)
+- [ ] Add Identity Service call for IC person header (`GET /api/v1/identity/persons/{id}`)
+- [ ] Add Connector Manager call for data availability (if not inline in query response)
