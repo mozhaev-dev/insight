@@ -243,6 +243,11 @@ path = "docs/components/connectors/ai/claude-api/specs/ADR/ADR-002-api-response-
 name = "ADR-002: API response structure — nested records and field mapping"
 
 [[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/connectors/ai/claude-api/specs/ADR/ADR-003-cursor-granularity-boundary-fix.md"
+name = "ADR-003: Cursor granularity PT1S to avoid empty date-boundary windows"
+
+[[systems.artifacts]]
 kind = "PRD"
 path = "docs/components/connectors/ai/claude-team/specs/PRD.md"
 name = "Claude Team Plan Connector PRD"
@@ -251,6 +256,11 @@ name = "Claude Team Plan Connector PRD"
 kind = "DESIGN"
 path = "docs/components/connectors/ai/claude-team/specs/DESIGN.md"
 name = "Claude Team Plan Connector Design"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/connectors/ai/claude-team/specs/ADR/ADR-001-cursor-granularity-boundary-fix.md"
+name = "ADR-001: Cursor granularity PT1S for consistency with claude-api"
 
 [[systems.artifacts]]
 kind = "PRD"

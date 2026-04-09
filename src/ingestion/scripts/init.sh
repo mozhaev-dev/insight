@@ -23,6 +23,14 @@ kubectl exec -n data deploy/clickhouse -- clickhouse-client --password "$CH_PASS
 kubectl exec -n data deploy/clickhouse -- clickhouse-client --password "$CH_PASS" \
   --query "CREATE DATABASE IF NOT EXISTS silver" 2>/dev/null
 
+echo "=== Running migrations ==="
+for migration in "$SCRIPT_DIR/migrations"/*.sql; do
+  [ -f "$migration" ] || continue
+  echo "  $(basename "$migration")"
+  grep -v '^\s*--' "$migration" \
+    | kubectl exec -i -n data deploy/clickhouse -- clickhouse-client --password "$CH_PASS" --multiquery
+done
+
 echo "=== Registering connectors ==="
 "${TOOLKIT_DIR}/register.sh" --all
 
