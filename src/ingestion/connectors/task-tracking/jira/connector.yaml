@@ -52,7 +52,7 @@ definitions:
       field_name: startAt
     pagination_strategy:
       type: OffsetIncrement
-      page_size: 50
+      page_size: "{{ config.get('jira_page_size', 50) }}"
 
   search_paginator:
     type: DefaultPaginator
@@ -81,7 +81,7 @@ definitions:
       field_name: startAt
     pagination_strategy:
       type: OffsetIncrement
-      page_size: 50
+      page_size: "{{ config.get('jira_page_size', 50) }}"
 
   child_paginator:
     type: DefaultPaginator
@@ -95,7 +95,7 @@ definitions:
       field_name: startAt
     pagination_strategy:
       type: OffsetIncrement
-      page_size: 100
+      page_size: "{{ config.get('jira_page_size', 50) }}"
 
   # --- Schemas ---
 
@@ -302,18 +302,7 @@ streams:
           type: DpathExtractor
           field_path: []
       paginator:
-        type: DefaultPaginator
-        page_size_option:
-          type: RequestOption
-          inject_into: request_parameter
-          field_name: maxResults
-        page_token_option:
-          type: RequestOption
-          inject_into: request_parameter
-          field_name: startAt
-        pagination_strategy:
-          type: OffsetIncrement
-          page_size: 200
+        $ref: "#/definitions/paginator"
       requester:
         $ref: "#/definitions/base_requester"
         path: /rest/api/3/users/search
