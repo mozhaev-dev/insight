@@ -70,10 +70,14 @@ async fn run_server(cfg: config::AppConfig) -> anyhow::Result<()> {
     infra::db::run_migrations(&db).await?;
 
     // Connect to ClickHouse
-    let ch = insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+    let mut ch_config = insight_clickhouse::Config::new(
         &cfg.clickhouse_url,
         &cfg.clickhouse_database,
-    ));
+    );
+    if let (Some(user), Some(password)) = (&cfg.clickhouse_user, &cfg.clickhouse_password) {
+        ch_config = ch_config.with_auth(user, password);
+    }
+    let ch = insight_clickhouse::Client::new(ch_config);
 
     // Build app state
     let state = api::AppState {

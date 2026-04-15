@@ -40,12 +40,29 @@ pub struct CreateMetricRequest {
 }
 
 /// Request to update a metric.
+///
+/// `description` uses double-Option to distinguish:
+/// - absent field → leave unchanged
+/// - explicit `null` → clear to None
+/// - `"some text"` → set to Some("some text")
 #[derive(Debug, Deserialize)]
 pub struct UpdateMetricRequest {
     pub name: Option<String>,
-    pub description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub description: Option<Option<String>>,
     pub query_ref: Option<String>,
     pub is_enabled: Option<bool>,
+}
+
+/// Deserialize a field that can be absent, null, or a value.
+/// - absent → `None` (outer)
+/// - `null` → `Some(None)`
+/// - `"text"` → `Some(Some("text"))`
+fn deserialize_optional_nullable<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
 }
 
 /// A column in the ClickHouse schema catalog.

@@ -169,7 +169,8 @@ The service has read-only access to ClickHouse. It does not write to Silver/Gold
 The service calls Identity Resolution via a generic HTTP API contract (resolve person_id -> aliases). The contract is:
 
 ```
-POST /v1/persons/{person_id}/aliases -> [{ alias_type, alias_value, insight_source_id }]
+GET /v1/persons/{person_id}/aliases
+-> { "aliases": [{ "alias_type": "email", "alias_value": "...", "insight_source_id": "..." }] }
 ```
 
 The specific Identity Resolution implementation is not a concern of this service.

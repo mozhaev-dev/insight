@@ -44,7 +44,7 @@ authDisabled: false
 
 # API Gateway settings
 gateway:
-  prefixPath: "/api/v1"
+  prefixPath: "/api"
   corsEnabled: true
   enableDocs: false     # Set true for dev; disabled by default for production
   rateLimit:

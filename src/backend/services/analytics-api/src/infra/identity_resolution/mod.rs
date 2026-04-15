@@ -19,6 +19,16 @@ struct AliasResponse {
     aliases: Vec<PersonAlias>,
 }
 
+/// RFC 9457 Problem Details (subset for error parsing).
+#[derive(Deserialize)]
+struct ProblemDetails {
+    #[allow(dead_code)]
+    r#type: Option<String>,
+    #[allow(dead_code)]
+    title: Option<String>,
+    detail: Option<String>,
+}
+
 /// Identity Resolution API client.
 pub struct IdentityResolutionClient {
     base_url: String,
@@ -58,14 +68,19 @@ impl IdentityResolutionClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            // Parse upstream RFC 9457 Problem Details if available
+            let detail = resp
+                .json::<ProblemDetails>()
+                .await
+                .map(|p| p.detail.unwrap_or_default())
+                .unwrap_or_default();
             tracing::warn!(
                 person_id = %person_id,
                 status = %status,
-                body = %body,
+                detail = %detail,
                 "identity resolution request failed"
             );
-            anyhow::bail!("identity resolution returned {status}: {body}");
+            anyhow::bail!("identity resolution returned {status}: {detail}");
         }
 
         let data: AliasResponse = resp.json().await?;

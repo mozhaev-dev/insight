@@ -25,7 +25,7 @@ spec:
       {{- end }}
       http:
         paths:
-          - path: {{ .Values.gateway.prefixPath | default "/api/v1" }}
+          - path: {{ .Values.gateway.prefixPath | default "/api" }}
             pathType: Prefix
             backend:
               service:

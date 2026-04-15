@@ -2,7 +2,7 @@
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use sea_orm::{ActiveModelTrait, ColumnTrait, Condition, EntityTrait, NotSet, QueryFilter, Set};
 use std::sync::Arc;
@@ -19,6 +19,57 @@ use crate::domain::threshold::{
 };
 use crate::infra::db::entities;
 
+// ── Error type (RFC 9457 Problem Details) ───────────────────
+
+/// API error that serializes as RFC 9457 `application/problem+json`.
+pub struct ApiError {
+    status: StatusCode,
+    error_type: &'static str,
+    title: &'static str,
+    detail: String,
+}
+
+impl ApiError {
+    fn bad_request(error_type: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            error_type,
+            title: "Bad Request",
+            detail: detail.into(),
+        }
+    }
+
+    fn not_found(error_type: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            error_type,
+            title: "Not Found",
+            detail: detail.into(),
+        }
+    }
+
+    fn internal(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error_type: "urn:insight:error:internal",
+            title: "Internal Server Error",
+            detail: detail.into(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({
+            "type": self.error_type,
+            "title": self.title,
+            "status": self.status.as_u16(),
+            "detail": self.detail,
+        });
+        (self.status, Json(body)).into_response()
+    }
+}
+
 // ── Health ──────────────────────────────────────────────────
 
 pub async fn health() -> impl IntoResponse {
@@ -30,7 +81,7 @@ pub async fn health() -> impl IntoResponse {
 pub async fn list_metrics(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
     let rows = entities::metrics::Entity::find()
         .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
         .filter(entities::metrics::Column::IsEnabled.eq(true))
@@ -38,7 +89,7 @@ pub async fn list_metrics(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to list metrics");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to list metrics")
         })?;
 
     let items: Vec<MetricSummary> = rows.into_iter().map(model_to_metric_summary).collect();
@@ -49,17 +100,8 @@ pub async fn get_metric(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
     Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let row = entities::metrics::Entity::find_by_id(id)
-        .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
-        .one(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to get metric");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
+) -> Result<impl IntoResponse, ApiError> {
+    let row = find_enabled_metric(&state, ctx.insight_tenant_id, id).await?;
     Ok(Json(model_to_metric(row)))
 }
 
@@ -67,7 +109,12 @@ pub async fn create_metric(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
     Json(req): Json<CreateMetricRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
+    // Validate query_ref on write — reject malformed definitions early
+    parse_query_ref(&req.query_ref).map_err(|e| {
+        ApiError::bad_request("urn:insight:error:invalid_query_ref", e)
+    })?;
+
     let id = Uuid::now_v7();
 
     let model = entities::metrics::ActiveModel {
@@ -86,14 +133,14 @@ pub async fn create_metric(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to create metric");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to create metric")
         })?;
 
     let row = entities::metrics::Entity::find_by_id(id)
         .one(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| ApiError::internal("failed to fetch created metric"))?
+        .ok_or_else(|| ApiError::internal("created metric not found"))?;
 
     Ok((StatusCode::CREATED, Json(model_to_metric(row))))
 }
@@ -103,23 +150,22 @@ pub async fn update_metric(
     Extension(ctx): Extension<SecurityContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateMetricRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let existing = entities::metrics::Entity::find_by_id(id)
-        .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
+) -> Result<impl IntoResponse, ApiError> {
+    let existing = find_enabled_metric(&state, ctx.insight_tenant_id, id).await?;
     let mut model: entities::metrics::ActiveModel = existing.into();
 
     if let Some(name) = req.name {
         model.name = Set(name);
     }
+    // Explicit null clears description; absent field leaves it unchanged.
     if let Some(desc) = req.description {
-        model.description = Set(Some(desc));
+        model.description = Set(desc);
     }
     if let Some(query_ref) = req.query_ref {
+        // Validate query_ref on write
+        parse_query_ref(&query_ref).map_err(|e| {
+            ApiError::bad_request("urn:insight:error:invalid_query_ref", e)
+        })?;
         model.query_ref = Set(query_ref);
     }
     if let Some(enabled) = req.is_enabled {
@@ -129,7 +175,7 @@ pub async fn update_metric(
 
     let updated = model.update(&state.db).await.map_err(|e| {
         tracing::error!(error = %e, "failed to update metric");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::internal("failed to update metric")
     })?;
 
     Ok(Json(model_to_metric(updated)))
@@ -139,20 +185,15 @@ pub async fn delete_metric(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
     Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let existing = entities::metrics::Entity::find_by_id(id)
-        .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<impl IntoResponse, ApiError> {
+    let existing = find_enabled_metric(&state, ctx.insight_tenant_id, id).await?;
 
     let mut model: entities::metrics::ActiveModel = existing.into();
     model.is_enabled = Set(false);
     model.updated_at = Set(chrono::Utc::now().into());
     model.update(&state.db).await.map_err(|e| {
         tracing::error!(error = %e, "failed to soft-delete metric");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::internal("failed to soft-delete metric")
     })?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -165,15 +206,9 @@ pub async fn query_metric(
     Extension(ctx): Extension<SecurityContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<QueryRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // 1. Load metric definition
-    let metric = entities::metrics::Entity::find_by_id(id)
-        .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
-        .filter(entities::metrics::Column::IsEnabled.eq(true))
-        .one(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<impl IntoResponse, ApiError> {
+    // 1. Load metric definition (must be enabled)
+    let metric = find_enabled_metric(&state, ctx.insight_tenant_id, id).await?;
 
     // 2. Load thresholds for this metric
     let thresholds = entities::thresholds::Entity::find()
@@ -181,15 +216,14 @@ pub async fn query_metric(
         .filter(entities::thresholds::Column::InsightTenantId.eq(ctx.insight_tenant_id))
         .all(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| ApiError::internal("failed to load thresholds"))?;
 
     // 3. Validate $top
     let top = req.top.min(200).max(1);
 
-    // 4. Build ClickHouse query from query_ref.
+    // 4. Build ClickHouse query from structured metric fields.
     //
-    // query_ref is parsed into (select_expr, table, group_by) on read.
-    // The engine always builds FROM and WHERE — insight_tenant_id is
+    // The engine always controls FROM and WHERE — insight_tenant_id is
     // always injected for tenant isolation. Admins never control WHERE.
     //
     // TODO: Full implementation should also:
@@ -200,7 +234,7 @@ pub async fn query_metric(
 
     let (select_expr, table, group_by) = parse_query_ref(&metric.query_ref).map_err(|e| {
         tracing::error!(error = %e, query_ref = %metric.query_ref, "invalid query_ref");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::internal("metric has invalid query_ref")
     })?;
 
     let mut sql = format!("SELECT {select_expr} FROM {table} WHERE insight_tenant_id = ?");
@@ -226,8 +260,10 @@ pub async fn query_metric(
     // Apply $orderby — validate against identifier pattern to prevent injection
     if let Some(ref orderby) = req.orderby {
         if !is_valid_orderby(orderby) {
-            tracing::warn!(orderby = %orderby, "rejected invalid $orderby");
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(ApiError::bad_request(
+                "urn:insight:error:invalid_order_by",
+                format!("invalid $orderby: {orderby}"),
+            ));
         }
         sql.push_str(&format!(" ORDER BY {orderby}"));
     }
@@ -238,10 +274,6 @@ pub async fn query_metric(
     tracing::debug!(sql = %sql, metric_id = %id, "executing metric query");
 
     // TODO: Execute the query against ClickHouse.
-    // For dynamic metrics (columns vary per metric), we need either:
-    // - A generic row type that deserializes any column set
-    // - Raw query execution returning serde_json::Value rows
-    //
     // Placeholder response with debug info.
     let mut items: Vec<serde_json::Value> = vec![serde_json::json!({
         "_debug_sql": sql,
@@ -256,7 +288,6 @@ pub async fn query_metric(
             for t in &thresholds {
                 if let Some(val) = obj.get(&t.field_name).and_then(|v| v.as_f64()) {
                     if threshold::threshold_matches(val, &t.operator, t.value) {
-                        // Keep highest severity: critical > warning > good
                         let current = threshold_results
                             .get(&t.field_name)
                             .and_then(|v| v.as_str());
@@ -414,20 +445,40 @@ fn is_valid_ident(s: &str) -> bool {
         && !s.ends_with('.')
 }
 
+// ── Shared helpers ──────────────────────────────────────────
+
+/// Find an enabled metric by ID and tenant. Returns 404 if missing or disabled.
+async fn find_enabled_metric(
+    state: &AppState,
+    tenant_id: Uuid,
+    metric_id: Uuid,
+) -> Result<entities::metrics::Model, ApiError> {
+    entities::metrics::Entity::find_by_id(metric_id)
+        .filter(entities::metrics::Column::InsightTenantId.eq(tenant_id))
+        .filter(entities::metrics::Column::IsEnabled.eq(true))
+        .one(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to find metric");
+            ApiError::internal("failed to find metric")
+        })?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "urn:insight:error:metric_not_found",
+                "metric not found or disabled",
+            )
+        })
+}
+
 // ── Thresholds CRUD ─────────────────────────────────────────
 
 pub async fn list_thresholds(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
     Path(metric_id): Path<Uuid>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // Verify metric exists and belongs to tenant
-    entities::metrics::Entity::find_by_id(metric_id)
-        .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<impl IntoResponse, ApiError> {
+    // Verify metric exists, is enabled, and belongs to tenant
+    find_enabled_metric(&state, ctx.insight_tenant_id, metric_id).await?;
 
     let rows = entities::thresholds::Entity::find()
         .filter(entities::thresholds::Column::MetricId.eq(metric_id))
@@ -436,7 +487,7 @@ pub async fn list_thresholds(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to list thresholds");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to list thresholds")
         })?;
 
     let items: Vec<Threshold> = rows.into_iter().map(model_to_threshold).collect();
@@ -448,19 +499,11 @@ pub async fn create_threshold(
     Extension(ctx): Extension<SecurityContext>,
     Path(metric_id): Path<Uuid>,
     Json(req): Json<CreateThresholdRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // Verify metric exists and belongs to tenant
-    entities::metrics::Entity::find_by_id(metric_id)
-        .filter(entities::metrics::Column::InsightTenantId.eq(ctx.insight_tenant_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<impl IntoResponse, ApiError> {
+    find_enabled_metric(&state, ctx.insight_tenant_id, metric_id).await?;
 
-    // Validate operator and level
     threshold::validate_threshold(&req.operator, &req.level).map_err(|e| {
-        tracing::warn!(error = %e, "invalid threshold");
-        StatusCode::BAD_REQUEST
+        ApiError::bad_request("urn:insight:error:invalid_threshold", e)
     })?;
 
     let id = Uuid::now_v7();
@@ -482,14 +525,14 @@ pub async fn create_threshold(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to create threshold");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to create threshold")
         })?;
 
     let row = entities::thresholds::Entity::find_by_id(id)
         .one(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| ApiError::internal("failed to fetch created threshold"))?
+        .ok_or_else(|| ApiError::internal("created threshold not found"))?;
 
     Ok((StatusCode::CREATED, Json(model_to_threshold(row))))
 }
@@ -499,14 +542,19 @@ pub async fn update_threshold(
     Extension(ctx): Extension<SecurityContext>,
     Path((metric_id, tid)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateThresholdRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
     let existing = entities::thresholds::Entity::find_by_id(tid)
         .filter(entities::thresholds::Column::MetricId.eq(metric_id))
         .filter(entities::thresholds::Column::InsightTenantId.eq(ctx.insight_tenant_id))
         .one(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .map_err(|_| ApiError::internal("failed to find threshold"))?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "urn:insight:error:threshold_not_found",
+                "threshold not found",
+            )
+        })?;
 
     let mut model: entities::thresholds::ActiveModel = existing.into();
 
@@ -515,7 +563,10 @@ pub async fn update_threshold(
     }
     if let Some(operator) = req.operator {
         if !threshold::VALID_OPERATORS.contains(&operator.as_str()) {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(ApiError::bad_request(
+                "urn:insight:error:invalid_threshold",
+                "invalid operator",
+            ));
         }
         model.operator = Set(operator);
     }
@@ -524,7 +575,10 @@ pub async fn update_threshold(
     }
     if let Some(level) = req.level {
         if !threshold::VALID_LEVELS.contains(&level.as_str()) {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(ApiError::bad_request(
+                "urn:insight:error:invalid_threshold",
+                "invalid level",
+            ));
         }
         model.level = Set(level);
     }
@@ -532,7 +586,7 @@ pub async fn update_threshold(
 
     let updated = model.update(&state.db).await.map_err(|e| {
         tracing::error!(error = %e, "failed to update threshold");
-        StatusCode::INTERNAL_SERVER_ERROR
+        ApiError::internal("failed to update threshold")
     })?;
 
     Ok(Json(model_to_threshold(updated)))
@@ -542,21 +596,26 @@ pub async fn delete_threshold(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
     Path((metric_id, tid)): Path<(Uuid, Uuid)>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
     let existing = entities::thresholds::Entity::find_by_id(tid)
         .filter(entities::thresholds::Column::MetricId.eq(metric_id))
         .filter(entities::thresholds::Column::InsightTenantId.eq(ctx.insight_tenant_id))
         .one(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .map_err(|_| ApiError::internal("failed to find threshold"))?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "urn:insight:error:threshold_not_found",
+                "threshold not found",
+            )
+        })?;
 
     entities::thresholds::Entity::delete_by_id(existing.id)
         .exec(&state.db)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to delete threshold");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to delete threshold")
         })?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -567,7 +626,7 @@ pub async fn delete_threshold(
 pub async fn list_columns(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
     let columns = entities::table_columns::Entity::find()
         .filter(
             Condition::any()
@@ -578,7 +637,7 @@ pub async fn list_columns(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to list columns");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to list columns")
         })?;
 
     let items: Vec<TableColumn> = columns.into_iter().map(model_to_column).collect();
@@ -589,7 +648,7 @@ pub async fn list_columns_for_table(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<SecurityContext>,
     Path(table): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ApiError> {
     let columns = entities::table_columns::Entity::find()
         .filter(entities::table_columns::Column::ClickhouseTable.eq(&table))
         .filter(
@@ -601,7 +660,7 @@ pub async fn list_columns_for_table(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to list columns for table");
-            StatusCode::INTERNAL_SERVER_ERROR
+            ApiError::internal("failed to list columns for table")
         })?;
 
     let items: Vec<TableColumn> = columns.into_iter().map(model_to_column).collect();
@@ -727,7 +786,6 @@ mod tests {
 
     #[test]
     fn parse_rejects_table_with_where() {
-        // WHERE in the table position should fail identifier validation
         let result = parse_query_ref("SELECT col FROM gold.t WHERE 1=1");
         assert!(result.is_err());
     }

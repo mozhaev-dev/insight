@@ -21,6 +21,14 @@ pub struct AppConfig {
     #[serde(default = "default_clickhouse_database")]
     pub clickhouse_database: String,
 
+    /// `ClickHouse` username. Optional — omit for no-auth deployments.
+    #[serde(default)]
+    pub clickhouse_user: Option<String>,
+
+    /// `ClickHouse` password.
+    #[serde(default)]
+    pub clickhouse_password: Option<String>,
+
     /// Identity Resolution service base URL (e.g., `http://identity-resolution:8082`).
     #[serde(default)]
     pub identity_resolution_url: String,

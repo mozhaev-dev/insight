@@ -263,23 +263,25 @@ async fn forward_request(
     // Read request body (max 16 MB)
     let body_bytes = axum::body::to_bytes(body, 16 * 1024 * 1024).await?;
 
-    // Build proxied request — forward method, headers, and body
+    // Build proxied request — forward end-to-end headers only
     let mut upstream_req = state.client.request(parts.method.clone(), &upstream_uri);
 
     for (name, value) in &parts.headers {
-        if name != "host" {
+        if !is_hop_by_hop(name.as_str()) {
             upstream_req = upstream_req.header(name, value);
         }
     }
 
     let upstream_resp = upstream_req.body(body_bytes).send().await?;
 
-    // Convert reqwest response back to axum response
+    // Convert reqwest response back to axum response — strip hop-by-hop headers
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())?;
     let mut builder = Response::builder().status(status);
 
     for (name, value) in upstream_resp.headers() {
-        builder = builder.header(name, value);
+        if !is_hop_by_hop(name.as_str()) {
+            builder = builder.header(name, value);
+        }
     }
 
     let resp_headers = upstream_resp.headers().clone();
@@ -295,4 +297,21 @@ async fn forward_request(
     }
 
     Ok(response)
+}
+
+/// RFC 2616 §13.5.1 / RFC 7230 §6.1 — headers that are connection-scoped
+/// and must not be forwarded by a proxy.
+fn is_hop_by_hop(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+    )
 }
