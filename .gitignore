@@ -19,6 +19,7 @@ access
 .claude/worktrees/
 .claude/settings.local.json
 .claude/design_validate.json
+.claude/scheduled_tasks.lock
 
 # Cypilot plans (local working state)
 cypilot/.plans/

@@ -84,7 +84,7 @@ The wiki data model is document-centric rather than event-centric: Bronze tables
 - Extract per-user per-page view analytics when Confluence Premium tier is available
 - Graceful degradation on Standard tier — edit activity collected without view data
 - Email resolution from Atlassian `accountId` via the User API bulk endpoint
-- Incremental extraction using `lastModifiedAfter` cursor for pages and version history
+- Incremental extraction using client-side cursor via `sort=-modified-date` with `is_client_side_incremental` for pages
 - All data written to the unified `wiki_*` schema with `data_source = 'insight_confluence'`
 
 ### 1.4 Glossary
@@ -155,7 +155,7 @@ The wiki data model is document-centric rather than event-centric: Bronze tables
 - Extraction of user directory via `accountId` → email resolution through the Atlassian User API bulk endpoint
 - User directory history preserved with SCD Type 2 (`valid_from`/`valid_to`)
 - Connector execution monitoring via collection runs stream
-- Incremental sync using `lastModifiedAfter` cursor for pages and version history
+- Incremental sync using client-side cursor via `sort=-modified-date` with `is_client_side_incremental` for pages
 - Identity resolution via `email` resolved from Atlassian `accountId`
 - All data written to unified `wiki_*` schema with `data_source = 'insight_confluence'`
 - `insight_source_id` and `tenant_id` stamped on every record
@@ -196,11 +196,11 @@ The connector **MUST** extract Confluence pages from `GET /pages` (paginated, fi
 
 The page query **MUST** include `status=current,archived,trashed` to capture trashed pages (soft-deleted, in the Confluence trash). Including trashed pages enables downstream analytics to detect deletions — a page transitioning from `current` to `trashed` between runs is a soft-delete signal. Draft pages (`status=draft`) are excluded because they are unpublished private content.
 
-The connector **MUST** support incremental sync using the `lastModifiedAfter` parameter on the `/pages` endpoint, storing `max(version.createdAt)` **per space** as the cursor. On subsequent runs, only pages modified since the stored cursor for each space are fetched. Per-space cursors ensure that adding a new space to scope triggers a full initial load for that space without re-fetching all pages from existing spaces.
+The connector **MUST** support incremental sync using `sort=-modified-date` with client-side cursor filtering (`is_client_side_incremental: true`). The cursor value is `max(version.createdAt)` from the previous successful run. On subsequent runs, the connector fetches all pages sorted by descending modification date and filters client-side against the stored cursor. **Note**: The v2 `/pages` endpoint does NOT support a `lastModifiedAfter` query parameter -- client-side incremental filtering is the only available approach.
 
 **Known limitation**: If a page is **permanently purged** from the Confluence trash (not just trashed), it disappears from all API responses. The incremental cursor will never see it. The connector **SHOULD** support a periodic full-refresh reconciliation run (e.g., weekly) to detect permanently purged pages by comparing Bronze page IDs against the current full page list. Between reconciliation runs, purged pages persist in Bronze as `status = trashed` or `status = current`.
 
-**Known behavior**: The `lastModifiedAfter` parameter filters by the page's latest version timestamp. New pages appear in incremental results because their `createdAt` qualifies. This resolves OQ-CONF-3.
+**Known behavior**: New pages appear in incremental results because their `createdAt` qualifies as a modification timestamp and the client-side cursor compares against it. This resolves OQ-CONF-3.
 
 **Rationale**: Pages are the core entity for wiki analytics. Parent hierarchy enables documentation structure analysis. Per-space incremental sync is required for sustainable operation on large instances and for correct handling of scope changes.
 
@@ -249,7 +249,9 @@ The analytics viewers endpoint is paginated (default limit: 100 per response). T
 
 #### Resolve Email from accountId
 
-- [ ] `p1` - **ID**: `cpt-insightspec-fr-conf-email-resolution`
+- [ ] `p2` - **ID**: `cpt-insightspec-fr-conf-email-resolution`
+
+> **Phase 1 deferral**: Email resolution is delivered by the Silver/dbt layer via JOIN with the `jira_user` stream (shared Atlassian `accountId` namespace). The Confluence connector emits `accountId` only on `author_id` / `last_editor_id`; `author_email` / `last_editor_email` are populated downstream. Rationale: the v1 `/rest/api/user/bulk` endpoint cannot be expressed in the declarative YAML runtime without a CDK fallback, and the `jira_user` JOIN provides equivalent coverage for any organization that also operates Jira. Priority reduced from `p1` to `p2` per DESIGN §1.1 and §3.2 (driver row 5). Restore to `p1` with a dedicated User API stream when connector-level resolution is required (e.g., Confluence-only deployments with no Jira connector).
 
 The connector **MUST** collect all unique `accountId` values encountered in page responses (`authorId`, `version.authorId`) and analytics viewer records, and batch-resolve them to email via `GET /rest/api/user/bulk?accountId={id1}&accountId={id2}` (v1 API, up to 200 IDs per request).
 
@@ -271,13 +273,15 @@ Records with unresolvable email **MUST** retain the `accountId` in `user_id` and
 
 #### Preserve User Directory History (SCD Type 2)
 
-- [ ] `p1` - **ID**: `cpt-insightspec-fr-conf-user-scd`
+- [ ] `p2` - **ID**: `cpt-insightspec-fr-conf-user-scd`
+
+> **Phase 1 deferral**: The `wiki_users` stream is not emitted by the Confluence connector in Phase 1 (see FR `cpt-insightspec-fr-conf-email-resolution` deferral). SCD Type 2 versioning is therefore delivered by whichever Silver model assembles the canonical person timeline (from `jira_user`, HR, and any future connector-level Confluence user stream). Priority reduced from `p1` to `p2` per DESIGN §1.1 and §3.2 (driver row 5). Restore to `p1` alongside a dedicated `wiki_users` stream when connector-level user emission is required.
 
 The `wiki_users` table **MUST** preserve historical state changes using the SCD Type 2 pattern. When the connector detects a change in a user's attributes (email, display name, active status) between the current resolution and the most recent stored record, it **MUST** close the previous record and insert a new record with updated state.
 
 The Airbyte sync mode for `wiki_users` **MUST** be **Full Refresh | Append** (not overwrite). SCD Type 2 versioning (`valid_from`/`valid_to` or equivalent) **MUST** be applied at the destination layer via merge logic (e.g., ClickHouse ReplacingMergeTree with `_version` column, or destination-level MERGE statement). The implementation approach is deferred to DESIGN; note that Declarative YAML does not natively support stateful change detection, so destination-level MERGE is the expected path.
 
-**Note on Bronze schema**: The current `wiki_users` Bronze schema in `README.md` does not define `valid_from`/`valid_to` columns. SCD Type 2 is implemented at the destination/Silver level, not as explicit Bronze columns emitted by the connector. The connector emits the current-state snapshot with `_version` (millisecond timestamp) for deduplication; the destination merge logic derives `valid_from`/`valid_to` from successive snapshots.
+**Note on Bronze schema**: The current `wiki_users` Bronze schema in `README.md` does not define `valid_from`/`valid_to` columns. SCD Type 2 is implemented at the destination/Silver level, not as explicit Bronze columns emitted by the connector. If a future `wiki_users` stream is added, it would emit the current-state snapshot and rely on the framework-managed version column (`_airbyte_extracted_at`, not a custom `_version`) for deduplication; the destination merge logic derives `valid_from`/`valid_to` from successive snapshots.
 
 **Rationale**: The User API returns current state only. Without SCD Type 2, an email change or account deactivation silently overwrites history, breaking historical identity resolution.
 
@@ -313,9 +317,9 @@ Activity records use `(insight_source_id, page_id, user_id, date, data_source)` 
 
 The Airbyte sync mode for `wiki_pages` and `wiki_spaces` **MUST** be **Incremental | Append + Deduped** (upsert semantics). The `wiki_page_activity` stream **MUST** use **Incremental | Append + Deduped** with the composite key. The `wiki_users` stream **MUST** use **Full Refresh | Append** with SCD Type 2 handling.
 
-Every record **MUST** include a `_version` field set to `current_timestamp_ms()` at emit time (millisecond Unix timestamp). This field is the deduplication version column used by the destination (e.g., ClickHouse ReplacingMergeTree) to resolve which record wins during merge — later records always supersede earlier ones.
+Every record **MUST** be deduplicated deterministically at the destination: later records supersede earlier ones for the same `unique_key`. In Phase 1 this is satisfied by Airbyte's destination framework, which auto-generates `_airbyte_extracted_at` (DateTime64, per-write timestamp) on every row and creates the table as `ReplacingMergeTree(_airbyte_extracted_at) ORDER BY unique_key`. No custom `_version` field is emitted by the manifest — project-wide convention shared with other no-code connectors (jira, zoom). See DESIGN §3.7.
 
-**Rationale**: Without upsert semantics, overlapping incremental windows produce duplicate rows. URN keys provide unambiguous cross-instance identity. `_version` ensures deterministic merge resolution at the destination layer.
+**Rationale**: Without upsert semantics, overlapping incremental windows produce duplicate rows. URN keys provide unambiguous cross-instance identity. The framework-managed `_airbyte_extracted_at` ensures deterministic merge resolution at the destination layer.
 
 **Actors**: `cpt-insightspec-actor-conf-api`
 
@@ -323,13 +327,11 @@ Every record **MUST** include a `_version` field set to `current_timestamp_ms()`
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-conf-incremental-sync`
 
-The connector **MUST** support incremental collection using the `lastModifiedAfter` parameter on the `/pages` endpoint. The cursor value **MUST** be stored **per space** as `max(version.createdAt)` from the previous successful run for that space. Version history collection **MUST** be scoped to versions created after the stored per-space cursor.
+The connector **MUST** support incremental collection using `sort=-modified-date` with client-side cursor filtering (`is_client_side_incremental: true`). The cursor value is `max(version.createdAt)` from the previous successful run. The connector fetches all pages sorted by descending modification date and filters client-side against the stored cursor. Version history collection is scoped by the parent page set returned by the incremental query. **Note**: The v2 `/pages` endpoint does NOT support a `lastModifiedAfter` query parameter.
 
-When a new space is added to scope, its cursor starts at epoch zero (triggering a full initial load for that space only). Existing spaces retain their cursors.
+Spaces are collected as full refresh on every run (small cardinality).
 
-Spaces and users are collected as full refresh on every run (small cardinality).
-
-**Rationale**: Full page scans on large Confluence instances (10,000+ pages) are expensive. Incremental sync via `lastModifiedAfter` reduces API calls to only modified pages. Per-space cursors ensure correct behavior when scope changes — a global cursor would skip historical pages in newly added spaces.
+**Rationale**: Full page scans on large Confluence instances (10,000+ pages) are expensive. Client-side incremental cursor with descending sort order minimizes the number of pages processed by encountering fresh records first. On large instances, this is less efficient than server-side filtering but is the only option given the v2 API constraints.
 
 **Actors**: `cpt-insightspec-actor-conf-operator`
 
@@ -337,9 +339,9 @@ Spaces and users are collected as full refresh on every run (small cardinality).
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-conf-instance-context`
 
-Every record emitted by the connector **MUST** include `insight_source_id` (identifying the specific Confluence instance) and `data_source` (set to `insight_confluence` for all records). The `tenant_id` (identifying the Insight tenant) **MUST** be present on every record — it is injected by the Airbyte platform or destination layer from the connection configuration, not emitted by the connector manifest itself.
+Every record emitted by the connector **MUST** include `tenant_id` (identifying the Insight tenant), `insight_source_id` (identifying the specific Confluence instance), and `data_source` (set to `insight_confluence` for all records). All three fields are injected by the connector manifest via `AddFields` transformations using values from the connector configuration (`insight_tenant_id`, `insight_source_id` config parameters).
 
-**Note on Bronze schema**: The current `wiki_*` Bronze schemas in `README.md` define `insight_source_id` and `data_source` but do not define a `tenant_id` column. `tenant_id` is a platform-level concern injected at the destination layer (e.g., via Airbyte custom transformation or ClickHouse materialized column). The connector configuration **MUST** include `tenant_id` as a parameter so the platform can inject it. URN-based primary keys reference `{tenant_id}` — the DESIGN must specify the injection mechanism.
+**Note on Bronze schema**: The connector manifest injects `tenant_id`, `source_id`, and `data_source` onto every record via `AddFields`. URN-based primary keys (`unique_key`) incorporate `{tenant_id}-{source_id}-{natural_key}`, ensuring cross-instance uniqueness. See DESIGN §3.3 for the injection pattern.
 
 **Rationale**: Multiple Confluence instances may feed into the same Bronze store. The `data_source` field enables the Silver pipeline to distinguish Confluence-originated records from Outline-originated records in the unified `wiki_*` schema.
 
@@ -409,7 +411,7 @@ The connector **MUST** extract all pages and versions matching the configured sp
 
 **Stability**: stable
 
-**Description**: Five Bronze streams using the unified wiki schema — `wiki_spaces`, `wiki_pages`, `wiki_page_activity` (edits + views merged), `wiki_users` (all with `data_source = 'insight_confluence'`), and `confluence_collection_runs`. Pages use `lastModifiedAfter` as the incremental cursor. Users are full refresh with SCD Type 2. Activity records use composite dedup keys.
+**Description**: Three Bronze streams in Phase 1 — `wiki_spaces`, `wiki_pages`, `wiki_page_versions` (all with `data_source = 'insight_confluence'`). Pages use client-side incremental cursor via `sort=-modified-date` with `is_client_side_incremental`. Spaces are full-refresh. Page versions are a substream scoped by the incremental parent page set. Additional streams deferred to Phase 2: `wiki_page_activity` (edit + view aggregation, depends on Silver/dbt), `wiki_users` (email resolution, see FR `cpt-insightspec-fr-conf-email-resolution`), and `confluence_collection_runs` (operational log, see FR `cpt-insightspec-fr-conf-collection-runs`).
 
 **Field-level schemas**: Defined in [`confluence.md`](../confluence.md) (field-level mapping from Confluence API to Bronze columns) and [`README.md`](../README.md) (unified wiki schema).
 
@@ -428,7 +430,7 @@ The connector **MUST** extract all pages and versions matching the configured sp
 | Stream | Endpoint | API Version | Method |
 |--------|----------|-------------|--------|
 | `wiki_spaces` | `GET /spaces` | v2 | Full refresh |
-| `wiki_pages` | `GET /pages?spaceId={id}&lastModifiedAfter={cursor}` | v2 | Incremental |
+| `wiki_pages` | `GET /pages?sort=-modified-date&status=current,archived,trashed` | v2 | Incremental (client-side cursor) |
 | `wiki_page_activity` (edits) | `GET /pages/{id}/versions` | v2 | Child of pages — incremental |
 | `wiki_page_activity` (views) | `GET /analytics/content/{id}/viewers` | v2 | Child of pages — Premium only; paginated (100/page) |
 | `wiki_pages` (view_count) | `GET /analytics/content/{id}` | v2 | Summary: aggregate `viewCount` — Premium only |
@@ -491,7 +493,7 @@ The connector **MUST** extract all pages and versions matching the configured sp
 
 1. Orchestrator triggers the connector with current state
 2. Connector refreshes space directory from `GET /spaces` (full refresh)
-3. Connector queries pages modified since cursor via `GET /pages?spaceId={id}&lastModifiedAfter={cursor}` for each space in scope
+3. Connector queries pages via `GET /pages?sort=-modified-date&status=current,archived,trashed` and filters client-side against the stored cursor (`is_client_side_incremental`)
 4. For each modified page: fetch version history (`GET /pages/{id}/versions`) for versions created after cursor; produce edit activity rows
 5. If analytics enabled (Premium tier): for each modified page, fetch per-user view data from `GET /analytics/content/{id}/viewers`; produce view activity rows
 6. Collect all unique `accountId` values from pages and versions; batch-resolve to email via `GET /rest/api/user/bulk` (up to 200 IDs per request); apply SCD Type 2 versioning for user attribute changes
@@ -523,12 +525,12 @@ The connector **MUST** extract all pages and versions matching the configured sp
 - [ ] View analytics extracted on Premium tier instances (with paginated viewer endpoint); gracefully skipped on Standard tier with null view fields
 - [ ] `wiki_pages.view_count` and `distinct_viewers` populated from analytics summary endpoint (`GET /analytics/content/{id}`); null on Standard tier
 - [ ] User directory populated via `accountId` → email resolution from User API bulk endpoint; managed/SCIM accounts with null email handled gracefully
-- [ ] User directory preserves historical state with SCD Type 2 (destination-level merge via `_version`)
+- [ ] User directory preserves historical state with SCD Type 2 (destination-level merge via framework-managed version column) — **deferred, see FR `cpt-insightspec-fr-conf-user-scd` Phase 1 note**
 - [ ] Per-space incremental cursors: second run extracts only modified pages per space; adding a new space triggers full load for that space only
 - [ ] `email` resolved and backfilled into page and activity records; null when unavailable
-- [ ] `_version` (millisecond timestamp) present on all records for deduplication
+- [ ] Every record carries a destination-level version column used for deduplication (framework-managed `_airbyte_extracted_at` in Phase 1; see DESIGN §3.7)
 - [ ] URN-based surrogate primary keys on entity streams
-- [ ] `insight_source_id` and `data_source = 'insight_confluence'` emitted by connector; `tenant_id` injected by platform
+- [ ] `tenant_id`, `insight_source_id`, and `data_source = 'insight_confluence'` injected by connector manifest via `AddFields`
 - [ ] All timestamps stored in UTC
 - [ ] Collection run log (`confluence_collection_runs`) records success, per-stream counts, API call count, analytics availability, unresolved email count, spaces visible count, and per-page error count
 - [ ] API throttling (HTTP 429 and 503) handled with exponential backoff
@@ -553,19 +555,20 @@ The connector **MUST** extract all pages and versions matching the configured sp
 - The `/rest/api/user/bulk` endpoint (v1) accepts up to 200 `accountId` values per request and returns email when available; deactivated accounts may have `email = null`
 - The analytics endpoint (`/analytics/content/{id}/viewers`) is Premium-only; Standard tier returns 403 or 404
 - The analytics endpoint reports "user X viewed page Y at time Z" — not a count of views. `view_count = 1` means "at least one view by this user on this date"
-- `lastModifiedAfter` on the `/pages` endpoint filters by the latest version timestamp; new pages appear in results because their `createdAt` qualifies
+- ~~`lastModifiedAfter` on the `/pages` endpoint filters by the latest version timestamp; new pages appear in results because their `createdAt` qualifies~~ **Corrected in DESIGN**: `lastModifiedAfter` does NOT exist on the v2 `/pages` endpoint; client-side incremental cursor is used instead
+- `GET /wiki/api/v2/spaces` returns `createdAt` (ISO 8601 UTC timestamp) — **corrected**: earlier assumption that `createdAt` was not available on the v2 spaces endpoint was incorrect (confirmed via live API testing against `darthvolt.atlassian.net`)
 - Spaces and users are small-cardinality entities collected as full refresh on every run
-- Pages and version history are collected incrementally using `lastModifiedAfter` as cursor
+- Pages are collected incrementally using client-side cursor filtering via `sort=-modified-date` with `is_client_side_incremental: true` (the v2 API has no `lastModifiedAfter` parameter)
 - Atlassian enforces rate limits via a token-bucket model with varying budgets per endpoint category (content, analytics, user API). Both HTTP 429 and HTTP 503 are used for rate limiting. Analytics endpoints may have stricter limits than content endpoints
 - The `accountId` is shared across Confluence, Jira, and Bitbucket within the Atlassian platform — the same `accountId` in Confluence and Jira refers to the same person
 - Email resolution from `accountId` requires the `read:confluence-user` OAuth scope; without it, the User API returns 403. Both deactivated accounts and active managed accounts (SCIM/Atlassian Guard provisioned) may return `email = null` — this is not limited to inactive accounts
 - The `/rest/api/user/bulk` endpoint (v1) is accessible with `read:confluence-user` scope; `manage:confluence-user` is not required. If this assumption is incorrect, the DESIGN must specify the minimum required scope
 - The Airbyte Declarative Connector framework (YAML) can handle standard pagination and incremental sync but email resolution (batch lookup + backfill) and version-to-activity row expansion may require Python CDK components
 - The unified wiki schema (`wiki_*` tables) is shared with Outline; `data_source = 'insight_confluence'` discriminates Confluence records
-- The `wiki_*` Bronze schemas in `README.md` do not define `tenant_id` or SCD Type 2 columns (`valid_from`/`valid_to`). `tenant_id` is injected by the platform/destination layer; SCD Type 2 is implemented at the destination via merge logic using the `_version` column
+- The `wiki_*` Bronze schemas in `README.md` do not define `tenant_id` or SCD Type 2 columns (`valid_from`/`valid_to`). `tenant_id` is injected by the manifest via `AddFields`; SCD Type 2 is implemented at the destination/Silver layer via merge logic against the framework-managed version column (`_airbyte_extracted_at`)
 - `confluence_collection_runs` is a connector-specific table (not `wiki_collection_runs` from the unified schema) because it includes Confluence-specific instrumentation fields
 - `GET /spaces` returns only spaces visible to the authenticated API token user. Spaces restricted by space permissions are silently excluded — no error is returned for invisible spaces
-- The `/pages` endpoint requires `?expand=version` to include `version.authorId` and `version.createdAt` in the response. Without this expansion parameter, version metadata fields are absent from the response with no error
+- ~~The `/pages` endpoint requires `?expand=version` to include `version.authorId` and `version.createdAt` in the response. Without this expansion parameter, version metadata fields are absent from the response with no error~~ **Corrected in DESIGN**: v2 returns the `version` object by default; no `expand` parameter needed (confirmed via live API testing)
 - The `/analytics/content/{id}/viewers` endpoint is paginated (default: 100 per response) and returns only the last `viewedAt` timestamp per user per page — not a per-view event log. Per-day view granularity is not available from this endpoint
 - `wiki_pages.view_count` is sourced from the analytics summary endpoint (`GET /analytics/content/{id}`) which returns aggregate `viewCount`, not from the per-user viewers endpoint
 - Trashed pages are included in the page query (`status=current,archived,trashed`) to enable soft-delete detection. Permanently purged pages are invisible to all API endpoints
@@ -575,12 +578,12 @@ The connector **MUST** extract all pages and versions matching the configured sp
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Analytics endpoint unavailable (Standard tier) | No per-user view data; documentation consumption analytics limited to edit activity only | Graceful degradation: detect tier on first call, skip analytics, set view fields to null — see FR `cpt-insightspec-fr-conf-view-analytics` |
+| Analytics endpoint unavailable (Standard tier) | No per-user view data; documentation consumption analytics limited to edit activity only | Graceful degradation: detect tier on first call, skip analytics, set view fields to null — see FR `cpt-insightspec-fr-conf-view-analytics`. **Update (live API testing)**: the aggregate analytics summary endpoint (`GET /wiki/rest/api/analytics/content/{id}/viewers`) returned HTTP 200 with `{"id":720897,"count":0}` on a Free-plan instance (`darthvolt.atlassian.net`). This suggests the aggregate viewers count may work on all tiers while the per-user viewers list may still be Premium-only. Tier detection logic should distinguish between aggregate summary and per-user detail endpoints — requires further investigation before Phase 2 implementation |
 | Analytics endpoint requires per-page iteration | API call volume scales with page count; large instances (10,000+ pages) may consume significant quota on analytics calls alone | Limit analytics collection to pages modified since cursor (incremental); monitor API call counts; consider sampling strategy for very large instances |
 | Email redacted for deactivated accounts | Identity resolution fails for departed users; historical attribution gaps | Emit `accountId` as fallback; support deferred merge when email becomes available; log unresolvable accounts in collection run |
 | v1 User API deprecation | Atlassian may deprecate v1 endpoints; no v2 equivalent for user lookup exists today | Monitor Atlassian deprecation announcements; if v2 user endpoint is released, migrate. The `accountId` is stable and can be used for Atlassian-ecosystem joins (Jira, Bitbucket) as a fallback |
 | Rate limit exhaustion on large instances | Per-user rate limit (10 req/s) shared across all API calls; version history + analytics fan-out per page may saturate the limit | Implement exponential backoff; prioritize page and version collection over analytics; log throttle events in collection run |
-| `lastModifiedAfter` cursor misses edge cases | Pages modified at exactly the cursor timestamp may be skipped or double-counted | Use exclusive comparison (`>` not `>=`); accept minimal overlap as safe (upsert handles duplicates) |
+| Client-side cursor edge cases | Pages modified at exactly the cursor timestamp may be skipped or double-counted | Client-side cursor uses `>=` comparison; accept minimal overlap as safe (upsert handles duplicates) |
 | Personal spaces pollute analytics | Personal spaces (drafts, scratch pages) may skew editorial velocity and consumption metrics | Default space scope excludes personal spaces; operator can override |
 | Confluence API v2 field additions | New fields in v2 responses may change JSON structure | Field additions are non-breaking; the connector extracts only documented fields |
 | Email reuse on deactivated accounts | Departed user's email reassigned to new hire; two `wiki_users` records share the same email | SCD Type 2 with temporal bounds enables disambiguation — see FR `cpt-insightspec-fr-conf-user-scd` |
@@ -591,7 +594,7 @@ The connector **MUST** extract all pages and versions matching the configured sp
 | Standard-tier: zero consumption signals | Without Premium analytics AND without comments, Standard-tier instances provide only edit counts — no view data, no engagement signals. The "knowledge consumption" goal (Section 1.3) is unachievable for Standard-tier customers | Document limitation clearly. Consider promoting comment count extraction to P2 as a tier-independent consumption signal (comments are available on all tiers via `GET /pages/{id}/footer-comments`) |
 | Space visibility limited to API token permissions | `GET /spaces` returns only spaces the authenticated user can browse; restricted spaces are silently excluded with no error indication | Display `spaces_visible_count` in UC-001 and collection run log so operators can verify coverage. Document that the API token user must have Browse permission on all target spaces |
 | Analytics viewers endpoint: lossy `viewedAt` | The per-user viewers endpoint returns only the last view date per user per page, not a per-view event log. Gold metrics like "views per page per week" will undercount because intermediate view dates are lost | Document as a data quality caveat. `wiki_pages.view_count` from the summary endpoint provides accurate aggregate counts; per-user per-day breakdown is approximate |
-| `expand=version` required on /pages | Without `?expand=version` in the pages query, `version.authorId` and `version.createdAt` are absent from the response — no error, just missing fields. The connector silently produces incomplete records | Hardcode `expand=version` in all `/pages` requests. Validate during UC-001 that the expansion returns the expected fields |
+| ~~`expand=version` required on /pages~~ | ~~Without `?expand=version` in the pages query, `version.authorId` and `version.createdAt` are absent from the response~~ | **Resolved**: v2 returns the `version` object by default; no `expand` parameter needed (confirmed via live API testing) |
 
 ## 13. Resolved Questions
 
@@ -601,7 +604,7 @@ All open questions from the connector specification (`confluence.md`) have been 
 |----|---------|------------|-----------------|
 | OQ-CONF-1 | Email resolution from `accountId` | Batch resolve via `GET /rest/api/user/bulk` (v1 API, up to 200 IDs per request). Deactivated accounts may return `email = null` — the connector handles this gracefully by emitting the record with `accountId` only and `email = null`. The Identity Manager stores unresolvable accounts as isolated nodes with deferred merge capability. | FR `cpt-insightspec-fr-conf-email-resolution` |
 | OQ-CONF-2 | Analytics endpoint tier and rate limiting | Detect tier on first analytics call: 200 = Premium (collect views), 403/404 = Standard (skip all analytics). Do not retry failed analytics calls. Log `analytics_available` flag in collection run. Rate limit budget: analytics calls share the per-user limit with other calls; incremental collection (only modified pages) limits the blast radius. | FR `cpt-insightspec-fr-conf-view-analytics` |
-| OQ-CONF-3 | Incremental page sync strategy | Store `max(version.createdAt)` per run as the cursor. Use `lastModifiedAfter={cursor}` on `/pages` endpoint. New pages appear in incremental results because `createdAt` qualifies as the modification timestamp. Version history collection is also scoped by cursor. | FR `cpt-insightspec-fr-conf-page-extraction`, FR `cpt-insightspec-fr-conf-incremental-sync` |
+| OQ-CONF-3 | Incremental page sync strategy | Store `max(version.createdAt)` per run as the cursor. Use `sort=-modified-date` with `is_client_side_incremental: true` on the `/pages` endpoint (the v2 API has no `lastModifiedAfter` parameter). New pages appear in incremental results because `createdAt` qualifies as a modification timestamp. Version history collection is scoped by the parent page set. | FR `cpt-insightspec-fr-conf-page-extraction`, FR `cpt-insightspec-fr-conf-incremental-sync` |
 
 ## 14. Non-Applicable Requirements
 
