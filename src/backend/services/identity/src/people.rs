@@ -60,6 +60,7 @@ pub struct Subordinate {
 /// In-memory store: email (lowercased) → Person.
 pub struct PeopleStore {
     by_email: HashMap<String, Person>,
+    aliases: HashMap<String, String>,
 }
 
 impl PeopleStore {
@@ -129,7 +130,9 @@ impl PeopleStore {
             employees.push(row);
         }
 
-        Ok(Self::build(employees))
+        let mut store = Self::build(employees);
+        store.aliases = HashMap::new(); // no aliases in test mode
+        Ok(store)
     }
 
     fn build(employees: Vec<RawEmployee>) -> Self {
@@ -177,11 +180,21 @@ impl PeopleStore {
             }
         }
 
-        Self { by_email }
+        // MVP: hardcoded email aliases for test accounts
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "test@vz.com".to_owned(),
+            "oleksii.shponarskyi@virtuozzo.com".to_owned(),
+        );
+
+        Self { by_email, aliases }
     }
 
     pub fn get_by_email(&self, email: &str) -> Option<&Person> {
-        self.by_email.get(&email.to_lowercase())
+        let key = email.to_lowercase();
+        // Check aliases first, then direct lookup
+        let resolved = self.aliases.get(&key).unwrap_or(&key);
+        self.by_email.get(resolved)
     }
 
     pub fn len(&self) -> usize {

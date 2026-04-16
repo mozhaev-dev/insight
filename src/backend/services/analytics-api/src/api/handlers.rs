@@ -371,9 +371,9 @@ pub async fn query_metric(
     // 6. Apply pagination — we fetched top+1 to detect has_next
     let has_next = all_rows.len() > top as usize;
     let items: Vec<serde_json::Value> = if has_next {
-        all_rows.into_iter().take(top as usize).collect()
+        all_rows.into_iter().take(top as usize).map(round_floats).collect()
     } else {
-        all_rows
+        all_rows.into_iter().map(round_floats).collect()
     };
 
     let response = QueryResponse {
@@ -385,6 +385,27 @@ pub async fn query_metric(
     };
 
     Ok(Json(response))
+}
+
+/// Round all float values in a JSON object to 4 decimal places.
+fn round_floats(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                let rounded = (f * 10000.0).round() / 10000.0;
+                serde_json::json!(rounded)
+            } else {
+                serde_json::Value::Number(n)
+            }
+        }
+        serde_json::Value::Object(map) => {
+            serde_json::Value::Object(map.into_iter().map(|(k, v)| (k, round_floats(v))).collect())
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(round_floats).collect())
+        }
+        other => other,
+    }
 }
 
 /// Simplified OData value extractor.
