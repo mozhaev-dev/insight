@@ -411,7 +411,7 @@ The connector **MUST** extract all pages and versions matching the configured sp
 
 **Stability**: stable
 
-**Description**: Five Bronze streams using the unified wiki schema — `wiki_spaces`, `wiki_pages`, `wiki_page_activity` (edits + views merged), `wiki_users` (all with `data_source = 'insight_confluence'`), and `confluence_collection_runs`. Pages use client-side incremental cursor via `sort=-modified-date` with `is_client_side_incremental`. Users are full refresh with SCD Type 2. Activity records use composite dedup keys.
+**Description**: Three Bronze streams in Phase 1 — `wiki_spaces`, `wiki_pages`, `wiki_page_versions` (all with `data_source = 'insight_confluence'`). Pages use client-side incremental cursor via `sort=-modified-date` with `is_client_side_incremental`. Spaces are full-refresh. Page versions are a substream scoped by the incremental parent page set. Additional streams deferred to Phase 2: `wiki_page_activity` (edit + view aggregation, depends on Silver/dbt), `wiki_users` (email resolution, see FR `cpt-insightspec-fr-conf-email-resolution`), and `confluence_collection_runs` (operational log, see FR `cpt-insightspec-fr-conf-collection-runs`).
 
 **Field-level schemas**: Defined in [`confluence.md`](../confluence.md) (field-level mapping from Confluence API to Bronze columns) and [`README.md`](../README.md) (unified wiki schema).
 

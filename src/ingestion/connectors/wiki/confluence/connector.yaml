@@ -169,7 +169,8 @@ streams:
             value: >-
               {{ 'active' if record.get('status') == 'current' else record.get('status', '') }}
           - path: [url]
-            value: "{{ config['confluence_instance_url'] }}{{ record.get('_links', {}).get('webui', '') }}"
+            value: >-
+              {{ record.get('_links', {}).get('webui', '') if record.get('_links', {}).get('webui', '').startswith('http') else config['confluence_instance_url'] + record.get('_links', {}).get('webui', '') }}
           - path: [created_at]
             value: "{{ record.get('createdAt', '') }}"
           - path: [collected_at]
