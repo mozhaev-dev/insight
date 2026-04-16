@@ -1,7 +1,7 @@
-# Multi-stage build for Insight Analytics API
+# Multi-stage build for Identity Resolution stub
 #
 # Build context: src/backend/
-# Usage: cd src/backend && docker build -f services/analytics-api/Dockerfile -t insight-analytics-api:dev .
+# Usage: docker build -f services/identity/Dockerfile -t insight-identity:dev .
 
 # Stage 1: Builder
 FROM rust:1.92-bookworm AS builder
@@ -20,20 +20,19 @@ RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/sr
     mkdir -p plugins/oidc-authn-plugin/src && echo "" > plugins/oidc-authn-plugin/src/lib.rs && \
     mkdir -p services/api-gateway/src && echo "fn main() {}" > services/api-gateway/src/main.rs && \
     mkdir -p services/analytics-api/src && echo "fn main() {}" > services/analytics-api/src/main.rs && \
-    mkdir -p services/identity/src && echo "fn main() {}" > services/identity/src/main.rs && \
-    echo "" > services/identity/src/lib.rs
+    mkdir -p services/identity/src && echo "fn main() {}" > services/identity/src/main.rs
 
-RUN cargo build --release --bin analytics-api 2>/dev/null || true
+RUN cargo build --release --bin identity-resolution 2>/dev/null || true
 
 # --- Source layer ---
-RUN rm -rf libs/insight-clickhouse/src services/analytics-api/src \
-    target/release/analytics-api target/release/deps/analytics_api* \
+RUN rm -rf libs/insight-clickhouse/src services/identity/src \
+    target/release/identity-resolution target/release/deps/identity_resolution* \
     target/release/deps/insight_clickhouse* target/release/deps/libinsight_clickhouse*
 
 COPY libs/insight-clickhouse/src/ ./libs/insight-clickhouse/src/
-COPY services/analytics-api/src/ ./services/analytics-api/src/
+COPY services/identity/src/ ./services/identity/src/
 
-RUN cargo build --release --bin analytics-api
+RUN cargo build --release --bin identity-resolution
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim
@@ -44,12 +43,12 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/analytics-api /app/analytics-api
+COPY --from=builder /build/target/release/identity-resolution /app/identity-resolution
 
 RUN useradd -U -u 1000 appuser && \
     chown -R 1000:1000 /app
 USER 1000
 
-EXPOSE 8081
+EXPOSE 8082
 
-CMD ["/app/analytics-api"]
+CMD ["/app/identity-resolution"]

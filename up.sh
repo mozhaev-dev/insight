@@ -4,7 +4,7 @@
 # Components:
 #   1. Kind cluster + ingress-nginx
 #   2. Ingestion (Airbyte, ClickHouse, Argo)
-#   3. Backend  (Analytics API, API Gateway)
+#   3. Backend  (Analytics API, Identity Resolution, API Gateway)
 #   4. Frontend (SPA)
 #
 # Usage:
@@ -108,7 +108,28 @@ if [[ "$COMPONENT" == "all" || "$COMPONENT" == "app" || "$COMPONENT" == "backend
     --set clickhouse.url="http://clickhouse.data.svc.cluster.local:8123" \
     --set clickhouse.database=insight \
     --set redis.url="redis://insight-redis-master:6379" \
-    --set identityResolution.url="http://localhost:9999" \
+    --set identityResolution.url="http://insight-identity-identity-resolution:8082" \
+    --wait --timeout 3m
+
+  echo "=== Building Identity Resolution ==="
+  docker build -t insight-identity:local \
+    -f src/backend/services/identity/Dockerfile \
+    src/backend/
+
+  if [[ "$ENV" == "local" ]]; then
+    kind load docker-image insight-identity:local --name "${CLUSTER_NAME}"
+  fi
+
+  echo "=== Deploying Identity Resolution ==="
+  helm upgrade --install insight-identity src/backend/services/identity/helm/ \
+    --namespace insight \
+    --set image.repository=insight-identity \
+    --set image.tag=local \
+    --set image.pullPolicy=IfNotPresent \
+    --set clickhouse.url="http://clickhouse.data.svc.cluster.local:8123" \
+    --set clickhouse.database=insight \
+    --set clickhouse.user=insight \
+    --set clickhouse.password=insight-pass \
     --wait --timeout 3m
 
   echo "=== Deploying API Gateway ==="
@@ -120,6 +141,9 @@ if [[ "$COMPONENT" == "all" || "$COMPONENT" == "app" || "$COMPONENT" == "backend
     --set proxy.routes[0].prefix=/analytics
     --set proxy.routes[0].upstream=http://insight-analytics-analytics-api:8081
     --set proxy.routes[0].public=false
+    --set proxy.routes[1].prefix=/identity-resolution
+    --set proxy.routes[1].upstream=http://insight-identity-identity-resolution:8082
+    --set proxy.routes[1].public=false
     --wait --timeout 3m
   )
   if [[ "$ENV" == "local" ]]; then

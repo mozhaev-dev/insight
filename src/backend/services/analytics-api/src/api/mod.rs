@@ -8,12 +8,14 @@ use std::sync::Arc;
 
 use crate::auth;
 use crate::config::AppConfig;
+use crate::infra::identity_resolution::IdentityResolutionClient;
 
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
     pub ch: insight_clickhouse::Client,
+    pub identity: IdentityResolutionClient,
     pub config: AppConfig,
 }
 
@@ -35,6 +37,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/metrics/{id}/thresholds", axum::routing::post(handlers::create_threshold))
         .route("/v1/metrics/{id}/thresholds/{tid}", axum::routing::put(handlers::update_threshold))
         .route("/v1/metrics/{id}/thresholds/{tid}", axum::routing::delete(handlers::delete_threshold))
+        // Person lookup (delegates to Identity Resolution service)
+        .route("/v1/persons/{email}", axum::routing::get(handlers::get_person))
         // Column catalog
         .route("/v1/columns", axum::routing::get(handlers::list_columns))
         .route("/v1/columns/{table}", axum::routing::get(handlers::list_columns_for_table))

@@ -1,41 +1,44 @@
-//! Identity Resolution API client.
+//! Identity Resolution client.
 //!
-//! Resolves Insight person IDs to source-specific aliases.
-//! Used when querying Silver tables that don't have a unified `person_id`.
+//! Calls the Identity Resolution stub service to look up person info by email.
+//! Used by the query engine to enrich results with display names and org data.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-/// A resolved alias from Identity Resolution.
+/// Person info returned by the Identity Resolution service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersonAlias {
-    pub alias_type: String,
-    pub alias_value: String,
-    pub insight_source_id: Uuid,
+pub struct Person {
+    pub email: String,
+    pub display_name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub department: String,
+    pub division: String,
+    pub job_title: String,
+    pub status: String,
+    pub supervisor_email: Option<String>,
+    pub supervisor_name: Option<String>,
+    pub subordinates: Vec<Subordinate>,
 }
 
-#[derive(Deserialize)]
-struct AliasResponse {
-    aliases: Vec<PersonAlias>,
-}
-
-/// RFC 9457 Problem Details (subset for error parsing).
-#[derive(Deserialize)]
-struct ProblemDetails {
-    #[allow(dead_code)]
-    r#type: Option<String>,
-    #[allow(dead_code)]
-    title: Option<String>,
-    detail: Option<String>,
+/// Subordinate summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subordinate {
+    pub email: String,
+    pub display_name: String,
+    pub job_title: String,
 }
 
 /// Identity Resolution API client.
+#[derive(Clone)]
 pub struct IdentityResolutionClient {
     base_url: String,
     http: reqwest::Client,
 }
 
 impl IdentityResolutionClient {
+    /// Create a new client. `base_url` is the identity service root,
+    /// e.g. `http://insight-identity-identity-resolution:8082`.
     #[must_use]
     pub fn new(base_url: &str) -> Self {
         Self {
@@ -44,46 +47,37 @@ impl IdentityResolutionClient {
         }
     }
 
-    /// Resolve a person ID to all known aliases.
+    /// Look up a person by email address.
     ///
-    /// Calls `GET {base_url}/v1/persons/{person_id}/aliases` with the Bearer token
-    /// forwarded from the original request.
+    /// Calls `GET {base_url}/v1/persons/{email}`.
+    /// Returns `None` if the person is not found (404).
     ///
     /// # Errors
     ///
-    /// Returns error if the Identity Resolution API is unreachable or returns an error.
-    pub async fn resolve_aliases(
-        &self,
-        person_id: Uuid,
-        bearer_token: &str,
-    ) -> anyhow::Result<Vec<PersonAlias>> {
-        let url = format!("{}/v1/persons/{person_id}/aliases", self.base_url);
+    /// Returns error if the service is unreachable or returns an unexpected error.
+    pub async fn get_person(&self, email: &str) -> anyhow::Result<Option<Person>> {
+        let url = format!("{}/v1/persons/{email}", self.base_url);
 
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bearer {bearer_token}"))
-            .send()
-            .await?;
+        let resp = self.http.get(&url).send().await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
 
         if !resp.status().is_success() {
             let status = resp.status();
-            // Parse upstream RFC 9457 Problem Details if available
-            let detail = resp
-                .json::<ProblemDetails>()
-                .await
-                .map(|p| p.detail.unwrap_or_default())
-                .unwrap_or_default();
-            tracing::warn!(
-                person_id = %person_id,
-                status = %status,
-                detail = %detail,
-                "identity resolution request failed"
-            );
-            anyhow::bail!("identity resolution returned {status}: {detail}");
+            let body = resp.text().await.unwrap_or_default();
+            tracing::warn!(email = %email, status = %status, body = %body, "identity resolution failed");
+            anyhow::bail!("identity resolution returned {status}");
         }
 
-        let data: AliasResponse = resp.json().await?;
-        Ok(data.aliases)
+        let person: Person = resp.json().await?;
+        Ok(Some(person))
+    }
+
+    /// Check if the identity service is configured (URL is non-empty).
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        !self.base_url.is_empty()
     }
 }

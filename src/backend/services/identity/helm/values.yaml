@@ -1,0 +1,43 @@
+replicaCount: 1
+
+podAnnotations: {}
+
+image:
+  repository: ghcr.io/cyberfabric/insight-identity-resolution
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8082
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# Use a pre-provisioned Secret instead of creating one from values below.
+existingSecret: ""
+
+clickhouse:
+  url: "http://insight-clickhouse:8123"
+  database: "insight"
+  user: "insight"
+  password: ""
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5

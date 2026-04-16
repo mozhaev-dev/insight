@@ -1,0 +1,6 @@
+apiVersion: v2
+name: insight-identity-resolution
+description: Identity Resolution stub — person lookup from BambooHR
+version: 0.1.0
+appVersion: "0.1.0"
+type: application

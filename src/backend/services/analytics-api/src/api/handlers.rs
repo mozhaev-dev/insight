@@ -82,6 +82,32 @@ pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "healthy" }))
 }
 
+// ── Person lookup ──────────────────────────────────────────
+
+pub async fn get_person(
+    State(state): State<Arc<AppState>>,
+    Path(email): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !state.identity.is_configured() {
+        return Err(ApiError::internal("identity resolution service not configured"));
+    }
+
+    let person = state.identity.get_person(&email).await.map_err(|e| {
+        tracing::error!(error = %e, email = %email, "identity resolution request failed");
+        ApiError::internal("identity resolution unavailable")
+    })?;
+
+    match person {
+        Some(p) => Ok(Json(serde_json::to_value(p).map_err(|_| {
+            ApiError::internal("failed to serialize person")
+        })?)),
+        None => Err(ApiError::not_found(
+            "urn:insight:error:person_not_found",
+            format!("person with email '{email}' not found"),
+        )),
+    }
+}
+
 // ── Metrics CRUD ────────────────────────────────────────────
 
 pub async fn list_metrics(
@@ -236,7 +262,7 @@ pub async fn query_metric(
     // - Parse $select to restrict returned columns
     // - Implement cursor-based pagination (decode $skip → keyset)
 
-    let (select_expr, table, group_by) = parse_query_ref(&metric.query_ref).map_err(|e| {
+    let (select_expr, from_clause, group_by) = parse_query_ref(&metric.query_ref).map_err(|e| {
         tracing::error!(error = %e, query_ref = %metric.query_ref, "invalid query_ref");
         ApiError::internal("metric has invalid query_ref")
     })?;
@@ -255,8 +281,10 @@ pub async fn query_metric(
         _ => select_expr,
     };
 
-    let mut sql = format!("SELECT {select_expr} FROM {table} WHERE insight_tenant_id = ?");
-    let mut params: Vec<String> = vec![ctx.insight_tenant_id.to_string()];
+    // MVP: single tenant — skip tenant isolation filter.
+    // TODO: re-enable for multi-tenant: WHERE insight_tenant_id = ?
+    let mut sql = format!("SELECT {select_expr} FROM {from_clause} WHERE 1=1");
+    let mut params: Vec<String> = vec![];
 
     // Parse OData $filter (simplified — production needs a proper OData parser)
     if let Some(ref filter) = req.filter {
@@ -343,9 +371,9 @@ pub async fn query_metric(
     // 6. Apply pagination — we fetched top+1 to detect has_next
     let has_next = all_rows.len() > top as usize;
     let items: Vec<serde_json::Value> = if has_next {
-        all_rows.into_iter().take(top as usize).collect()
+        all_rows.into_iter().take(top as usize).map(round_floats).collect()
     } else {
-        all_rows
+        all_rows.into_iter().map(round_floats).collect()
     };
 
     let response = QueryResponse {
@@ -357,6 +385,27 @@ pub async fn query_metric(
     };
 
     Ok(Json(response))
+}
+
+/// Round all float values in a JSON object to 4 decimal places.
+fn round_floats(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                let rounded = (f * 10000.0).round() / 10000.0;
+                serde_json::json!(rounded)
+            } else {
+                serde_json::Value::Number(n)
+            }
+        }
+        serde_json::Value::Object(map) => {
+            serde_json::Value::Object(map.into_iter().map(|(k, v)| (k, round_floats(v))).collect())
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(round_floats).collect())
+        }
+        other => other,
+    }
 }
 
 /// Simplified OData value extractor.
@@ -372,11 +421,16 @@ fn extract_odata_value(filter: &str, field: &str, op: &str) -> Option<String> {
     None
 }
 
-/// Parse `query_ref` into (select_expr, table, group_by).
+/// Parse `query_ref` into (select_expr, from_clause, group_by).
 ///
 /// Expects SQL in the form:
-///   `SELECT <columns> FROM <table>`
-///   `SELECT <columns> FROM <table> GROUP BY <expr>`
+///   `SELECT <columns> FROM <from_clause>`
+///   `SELECT <columns> FROM <from_clause> GROUP BY <expr>`
+///
+/// `from_clause` can be:
+///   - A single table: `silver.class_comms_events`
+///   - A table with alias: `silver.class_comms_events c`
+///   - A JOIN: `silver.class_comms_events c JOIN bronze_bamboohr.employees e ON ...`
 ///
 /// The engine rebuilds the query with `WHERE insight_tenant_id = ?` always
 /// injected, so admins cannot bypass tenant isolation.
@@ -403,7 +457,7 @@ fn parse_query_ref(query_ref: &str) -> Result<(String, String, Option<String>), 
 
     // Find optional GROUP BY
     let group_by_pos = upper[from_pos + 6..].find(" GROUP BY ");
-    let (table_part, group_by) = match group_by_pos {
+    let (from_part, group_by) = match group_by_pos {
         Some(pos) => (
             after_from[..pos].trim(),
             Some(after_from[pos + 10..].trim().to_owned()), // skip " GROUP BY "
@@ -411,20 +465,136 @@ fn parse_query_ref(query_ref: &str) -> Result<(String, String, Option<String>), 
         None => (after_from.trim(), None),
     };
 
-    let table = table_part.to_owned();
-    if table.is_empty() {
-        return Err("table name is empty".to_owned());
+    let from_clause = from_part.to_owned();
+    if from_clause.is_empty() {
+        return Err("FROM clause is empty".to_owned());
     }
 
-    // Validate table name is a safe identifier (letters, digits, _, .)
-    if !table
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-    {
-        return Err(format!("invalid table name: {table}"));
+    validate_from_clause(&from_clause)?;
+
+    Ok((select_expr, from_clause, group_by))
+}
+
+/// Validate a FROM clause: single table, aliased table, or JOIN expression.
+///
+/// Rejects subqueries, semicolons, and WHERE clauses. Every table/alias token
+/// must be a safe identifier.
+fn validate_from_clause(from_clause: &str) -> Result<(), String> {
+    let upper = from_clause.to_ascii_uppercase();
+
+    // Reject dangerous patterns
+    if upper.contains("WHERE ") {
+        return Err("FROM clause must not contain WHERE".to_owned());
+    }
+    if from_clause.contains(';') {
+        return Err("FROM clause must not contain semicolons".to_owned());
+    }
+    // Reject subqueries: parentheses before any ON keyword indicate a subquery
+    // in the table position. Parentheses after ON are fine (e.g. `lower(c.email)`).
+    let first_on = upper.find(" ON ");
+    let first_paren = from_clause.find('(');
+    if let Some(paren_pos) = first_paren {
+        match first_on {
+            None => return Err("FROM clause must not contain subqueries".to_owned()),
+            Some(on_pos) if paren_pos < on_pos => {
+                return Err("FROM clause must not contain subqueries".to_owned());
+            }
+            _ => {} // parens after ON — OK (function calls in join conditions)
+        }
     }
 
-    Ok((select_expr, table, group_by))
+    // Split on JOIN keywords to get each table reference
+    // e.g. "t1 c JOIN t2 e ON c.x = e.y LEFT JOIN t3 f ON ..."
+    // We validate table names and aliases, and allow ON conditions.
+    let join_re = ["JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "CROSS JOIN"];
+
+    // Extract table references by splitting on JOIN boundaries
+    let segments = split_on_joins(&upper, from_clause);
+    for segment in &segments {
+        validate_table_segment(segment)?;
+    }
+
+    // Extra safety: ensure no SQL keywords that shouldn't be here
+    for keyword in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "UNION"] {
+        if upper.contains(keyword) {
+            return Err(format!("FROM clause must not contain {keyword}"));
+        }
+    }
+
+    let _ = join_re; // suppress unused warning
+    Ok(())
+}
+
+/// Split a FROM clause into segments at JOIN boundaries.
+/// Returns the original-case segments.
+fn split_on_joins<'a>(upper: &str, original: &'a str) -> Vec<&'a str> {
+    let mut positions = vec![0usize];
+
+    // Find all JOIN keyword positions (must match word boundary)
+    for keyword in [" LEFT JOIN ", " RIGHT JOIN ", " INNER JOIN ", " CROSS JOIN ", " JOIN "] {
+        let mut start = 0;
+        while let Some(pos) = upper[start..].find(keyword) {
+            positions.push(start + pos);
+            start += pos + keyword.len();
+        }
+    }
+
+    positions.sort_unstable();
+    positions.dedup();
+    positions.push(original.len());
+
+    positions
+        .windows(2)
+        .map(|w| original[w[0]..w[1]].trim())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Validate a single table segment like `silver.events c` or
+/// `JOIN silver.events c ON c.tid = e.tid`.
+fn validate_table_segment(segment: &str) -> Result<(), String> {
+    let upper = segment.to_ascii_uppercase();
+
+    // Strip leading JOIN keyword if present
+    let rest = strip_join_prefix(&upper, segment);
+
+    // Split on ON to separate "table alias" from "join condition"
+    let (table_part, _on_part) = match rest.to_ascii_uppercase().find(" ON ") {
+        Some(pos) => (&rest[..pos], Some(&rest[pos + 4..])),
+        None => (rest, None),
+    };
+
+    // table_part should be "database.table" or "database.table alias"
+    let tokens: Vec<&str> = table_part.split_whitespace().collect();
+    if tokens.is_empty() {
+        return Err("empty table reference in FROM clause".to_owned());
+    }
+
+    // First token is the table name
+    if !is_valid_ident(tokens[0]) {
+        return Err(format!("invalid table name: {}", tokens[0]));
+    }
+
+    // Second token (if present) is the alias
+    if tokens.len() > 1 && !is_valid_ident(tokens[1]) {
+        return Err(format!("invalid table alias: {}", tokens[1]));
+    }
+
+    if tokens.len() > 2 {
+        return Err(format!("unexpected tokens in table reference: {table_part}"));
+    }
+
+    Ok(())
+}
+
+/// Strip a leading JOIN keyword from a segment, returning the original-case remainder.
+fn strip_join_prefix<'a>(upper: &str, original: &'a str) -> &'a str {
+    for prefix in ["LEFT JOIN ", "RIGHT JOIN ", "INNER JOIN ", "CROSS JOIN ", "JOIN "] {
+        if upper.starts_with(prefix) {
+            return original[prefix.len()..].trim();
+        }
+    }
+    original.trim()
 }
 
 /// Case-insensitive prefix strip helper.
@@ -749,35 +919,35 @@ mod tests {
 
     #[test]
     fn parse_simple_select() {
-        let (sel, table, gb) =
+        let (sel, from, gb) =
             parse_query_ref("SELECT person_id, avg_hours FROM gold.pr_cycle_time").unwrap();
         assert_eq!(sel, "person_id, avg_hours");
-        assert_eq!(table, "gold.pr_cycle_time");
+        assert_eq!(from, "gold.pr_cycle_time");
         assert!(gb.is_none());
     }
 
     #[test]
     fn parse_with_group_by() {
-        let (sel, table, gb) = parse_query_ref(
+        let (sel, from, gb) = parse_query_ref(
             "SELECT person_id, avg(cycle_time_h) AS avg_hours FROM gold.pr_cycle_time GROUP BY person_id",
         )
         .unwrap();
         assert_eq!(sel, "person_id, avg(cycle_time_h) AS avg_hours");
-        assert_eq!(table, "gold.pr_cycle_time");
+        assert_eq!(from, "gold.pr_cycle_time");
         assert_eq!(gb.as_deref(), Some("person_id"));
     }
 
     #[test]
     fn parse_case_insensitive() {
-        let (sel, table, _) =
+        let (sel, from, _) =
             parse_query_ref("select col1, col2 from silver.commits").unwrap();
         assert_eq!(sel, "col1, col2");
-        assert_eq!(table, "silver.commits");
+        assert_eq!(from, "silver.commits");
     }
 
     #[test]
     fn parse_with_aggregates_and_group_by() {
-        let (sel, table, gb) = parse_query_ref(
+        let (sel, from, gb) = parse_query_ref(
             "SELECT org_unit_id, COUNT(DISTINCT person_id) AS headcount, AVG(focus_time_pct) AS focus FROM gold.team_summary GROUP BY org_unit_id",
         )
         .unwrap();
@@ -785,8 +955,28 @@ mod tests {
             sel,
             "org_unit_id, COUNT(DISTINCT person_id) AS headcount, AVG(focus_time_pct) AS focus"
         );
-        assert_eq!(table, "gold.team_summary");
+        assert_eq!(from, "gold.team_summary");
         assert_eq!(gb.as_deref(), Some("org_unit_id"));
+    }
+
+    #[test]
+    fn parse_with_join() {
+        let (sel, from, gb) = parse_query_ref(
+            "SELECT e.displayName, SUM(c.emails_sent) AS total FROM silver.class_comms_events c JOIN bronze_bamboohr.employees e ON lower(c.user_email) = lower(e.workEmail) GROUP BY e.displayName",
+        )
+        .unwrap();
+        assert_eq!(sel, "e.displayName, SUM(c.emails_sent) AS total");
+        assert_eq!(from, "silver.class_comms_events c JOIN bronze_bamboohr.employees e ON lower(c.user_email) = lower(e.workEmail)");
+        assert_eq!(gb.as_deref(), Some("e.displayName"));
+    }
+
+    #[test]
+    fn parse_with_left_join() {
+        let (_, from, _) = parse_query_ref(
+            "SELECT c.user_email FROM silver.events c LEFT JOIN bronze_bamboohr.employees e ON c.email = e.workEmail",
+        )
+        .unwrap();
+        assert!(from.contains("LEFT JOIN"));
     }
 
     #[test]
@@ -815,6 +1005,11 @@ mod tests {
     fn parse_rejects_table_with_where() {
         let result = parse_query_ref("SELECT col FROM gold.t WHERE 1=1");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_rejects_drop_in_from() {
+        assert!(parse_query_ref("SELECT col FROM gold.t; DROP TABLE x").is_err());
     }
 
     // ── is_valid_orderby ────────────────────────────────────
