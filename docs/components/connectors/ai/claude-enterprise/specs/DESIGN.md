@@ -149,7 +149,7 @@ Bronze tables preserve the original Enterprise Analytics API field names where p
 
 - [ ] `p2` - **ID**: `cpt-insightspec-principle-claude-enterprise-bronze-only`
 
-This connector iteration delivers Bronze tables and tenant tagging. Silver routing (to `class_ai_*` streams) and Gold aggregations are explicitly out of scope and are covered by later work. The `descriptor.yaml` is expected to declare `silver_targets: []` until this changes.
+This connector iteration delivers Bronze tables and tenant tagging. Silver routing (to `class_ai_*` streams) and Gold aggregations are explicitly out of scope and are covered by later work. The `descriptor.yaml` declares `dbt_select: ""` (no Silver models in scope). `silver_targets` is prohibited per Connector Spec §4.10.
 
 ### 2.2 Constraints
 
@@ -267,14 +267,15 @@ src/ingestion/connectors/ai/claude-enterprise/
 
 - [ ] `p2` - **ID**: `cpt-insightspec-component-claude-enterprise-descriptor`
 
-The `descriptor.yaml` registers the connector package with the platform. For this Bronze-only iteration, `silver_targets` is an empty list:
+The `descriptor.yaml` registers the connector package with the platform. For this Bronze-only iteration, `dbt_select` is empty and `silver_targets` is omitted (prohibited per Connector Spec §4.10):
 
 ```yaml
 name: claude-enterprise
 version: "1.0"
 type: nocode
 
-silver_targets: []   # Bronze-only scope; Silver routing is future work
+# silver_targets is prohibited per Connector Spec §4.10 — Silver determined by dbt_select tags.
+dbt_select: ""
 
 streams:
   - name: claude_enterprise_users
@@ -814,7 +815,7 @@ The Claude Enterprise connector uses one manifest and one Airbyte connection (da
 ```text
 Package: src/ingestion/connectors/ai/claude-enterprise/
 +-- connector.yaml (declarative manifest — 6 streams)
-+-- descriptor.yaml (package metadata — silver_targets: [])
++-- descriptor.yaml (package metadata — dbt_select: "", Bronze-only)
 
 Connection: claude-enterprise-{org_name}-daily
 +-- Schedule: daily (via orchestrator cron)
@@ -861,7 +862,7 @@ Every Bronze row carries `collected_at` (timestamp of extraction) and `insight_s
 
 ### Silver / Gold Mappings
 
-Silver routing is **explicitly out of scope** for this connector iteration. The `descriptor.yaml` lists `silver_targets: []` to make this explicit. When Silver routing is designed (future work), candidate mappings are:
+Silver routing is **explicitly out of scope** for this connector iteration. The `descriptor.yaml` sets `dbt_select: ""` to make this explicit (`silver_targets` is prohibited per §4.10). When Silver routing is designed (future work), candidate mappings are:
 
 | Bronze table | Candidate Silver target | Notes |
 |--------------|-------------------------|-------|
