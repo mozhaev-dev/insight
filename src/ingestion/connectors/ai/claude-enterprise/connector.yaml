@@ -8,6 +8,45 @@ check:
     - claude_enterprise_summaries
 
 definitions:
+  # error_handler is at top-level definitions (NOT under linked) per create.md §3.1:
+  # "Do NOT put error_handler in definitions.linked — Builder strips linked error handlers."
+  retryable_error_handler:
+    type: CompositeErrorHandler
+    error_handlers:
+      - type: DefaultErrorHandler
+        response_filters:
+          - type: HttpResponseFilter
+            action: RATE_LIMITED
+            http_codes:
+              - 429
+        backoff_strategies:
+          - type: WaitTimeFromHeader
+            header: Retry-After
+      - type: DefaultErrorHandler
+        max_retries: 5
+        response_filters:
+          - type: HttpResponseFilter
+            action: RETRY
+            http_codes:
+              - 503
+              - 500
+              - 502
+              - 504
+        backoff_strategies:
+          - type: ExponentialBackoffStrategy
+            factor: 5
+      - type: DefaultErrorHandler
+        response_filters:
+          - type: HttpResponseFilter
+            action: FAIL
+            http_codes:
+              - 401
+              - 404
+            error_message: >-
+              Authentication or scope error: verify the analytics_api_key has
+              the read:analytics scope (created at claude.ai/analytics/api-keys
+              by a Primary Owner).
+
   linked:
     HttpRequester:
       authenticator:
@@ -17,42 +56,6 @@ definitions:
       request_headers:
         anthropic-version: "2023-06-01"
         Accept: application/json
-      error_handler:
-        type: CompositeErrorHandler
-        error_handlers:
-          - type: DefaultErrorHandler
-            response_filters:
-              - type: HttpResponseFilter
-                action: RATE_LIMITED
-                http_codes:
-                  - 429
-            backoff_strategies:
-              - type: WaitTimeFromHeader
-                header: Retry-After
-          - type: DefaultErrorHandler
-            max_retries: 5
-            response_filters:
-              - type: HttpResponseFilter
-                action: RETRY
-                http_codes:
-                  - 503
-                  - 500
-                  - 502
-                  - 504
-            backoff_strategies:
-              - type: ExponentialBackoffStrategy
-                factor: 5
-          - type: DefaultErrorHandler
-            response_filters:
-              - type: HttpResponseFilter
-                action: FAIL
-                http_codes:
-                  - 401
-                  - 404
-                error_message: >-
-                  Authentication or scope error: verify the analytics_api_key has
-                  the read:analytics scope (created at claude.ai/analytics/api-keys
-                  by a Primary Owner).
     SimpleRetriever:
       paginator:
         type: DefaultPaginator
@@ -90,7 +93,7 @@ streams:
         request_headers:
           $ref: "#/definitions/linked/HttpRequester/request_headers"
         error_handler:
-          $ref: "#/definitions/linked/HttpRequester/error_handler"
+          $ref: "#/definitions/retryable_error_handler"
       paginator:
         type: NoPagination
       record_selector:
@@ -237,7 +240,7 @@ streams:
         request_headers:
           $ref: "#/definitions/linked/HttpRequester/request_headers"
         error_handler:
-          $ref: "#/definitions/linked/HttpRequester/error_handler"
+          $ref: "#/definitions/retryable_error_handler"
         request_parameters:
           limit: "1000"
       paginator:
@@ -619,7 +622,7 @@ streams:
         request_headers:
           $ref: "#/definitions/linked/HttpRequester/request_headers"
         error_handler:
-          $ref: "#/definitions/linked/HttpRequester/error_handler"
+          $ref: "#/definitions/retryable_error_handler"
         request_parameters:
           limit: "1000"
       paginator:
@@ -776,7 +779,7 @@ streams:
         request_headers:
           $ref: "#/definitions/linked/HttpRequester/request_headers"
         error_handler:
-          $ref: "#/definitions/linked/HttpRequester/error_handler"
+          $ref: "#/definitions/retryable_error_handler"
         request_parameters:
           limit: "1000"
       paginator:
@@ -953,7 +956,7 @@ streams:
         request_headers:
           $ref: "#/definitions/linked/HttpRequester/request_headers"
         error_handler:
-          $ref: "#/definitions/linked/HttpRequester/error_handler"
+          $ref: "#/definitions/retryable_error_handler"
         request_parameters:
           limit: "1000"
       paginator:
@@ -1114,7 +1117,7 @@ spec:
   type: Spec
   connection_specification:
     type: object
-    $schema: http://json-schema.org/schema#
+    $schema: http://json-schema.org/draft-07/schema#
     required:
       - insight_tenant_id
       - insight_source_id

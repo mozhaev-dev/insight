@@ -94,7 +94,7 @@ graph LR
 | `cpt-insightspec-fr-claude-enterprise-collection-runs` | Stream `claude_enterprise_collection_runs` — connector execution log |
 | `cpt-insightspec-fr-claude-enterprise-min-date-enforcement` | `start_datetime.min_datetime = 2026-01-01`; configured `start_date` clamped to this floor |
 | `cpt-insightspec-fr-claude-enterprise-reporting-lag` | `end_datetime = now_utc() - 3 days`; requests beyond this upper bound are deferred |
-| `cpt-insightspec-fr-claude-enterprise-deduplication` | Primary keys: `unique` (users/chat_projects/skills/connectors), `date` (summaries), `run_id` (collection_runs) |
+| `cpt-insightspec-fr-claude-enterprise-deduplication` | Primary keys: `unique_key` (users/chat_projects/skills/connectors), `date` (summaries), `run_id` (collection_runs) |
 | `cpt-insightspec-fr-claude-enterprise-tenant-tagging` | `AddFields` transformation injects `tenant_id`, `insight_source_id`, `data_source`, `collected_at` on every record |
 | `cpt-insightspec-fr-claude-enterprise-identity-key` | `user_email` in `claude_enterprise_users`; `created_by_email` in `claude_enterprise_chat_projects` |
 | `cpt-insightspec-fr-claude-enterprise-identity-email-only` | Anthropic `user.id` and `created_by.id` retained but not marked as identity keys |
@@ -275,38 +275,8 @@ version: "1.0"
 type: nocode
 
 # silver_targets is prohibited per Connector Spec §4.10 — Silver determined by dbt_select tags.
+# streams is prohibited per Connector Spec §4.10 — stream definitions owned by Airbyte connector.
 dbt_select: ""
-
-streams:
-  - name: claude_enterprise_users
-    bronze_table: claude_enterprise_users
-    primary_key: [unique]
-    cursor_field: date
-
-  - name: claude_enterprise_summaries
-    bronze_table: claude_enterprise_summaries
-    primary_key: [date]
-    cursor_field: date
-
-  - name: claude_enterprise_chat_projects
-    bronze_table: claude_enterprise_chat_projects
-    primary_key: [unique]
-    cursor_field: date
-
-  - name: claude_enterprise_skills
-    bronze_table: claude_enterprise_skills
-    primary_key: [unique]
-    cursor_field: date
-
-  - name: claude_enterprise_connectors
-    bronze_table: claude_enterprise_connectors
-    primary_key: [unique]
-    cursor_field: date
-
-  - name: claude_enterprise_collection_runs
-    bronze_table: claude_enterprise_collection_runs
-    primary_key: [run_id]
-    cursor_field: null
 ```
 
 #### Claude Enterprise Connector Manifest
@@ -371,7 +341,7 @@ definitions:
 streams:
   - type: DeclarativeStream
     name: claude_enterprise_users
-    primary_key: [unique]
+    primary_key: [unique_key]
     incremental_sync:
       type: DatetimeBasedCursor
       cursor_field: date
@@ -637,7 +607,7 @@ These columns are not defined in the manifest schema but are present in all Bron
 |-------|------|-------------|
 | `tenant_id` | UUID | Workspace isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Primary key — computed as `{date}:{user_id}` |
+| `unique_key` | String | Primary key — computed as `{date}:{user_id}` |
 | `date` | String | Activity date (YYYY-MM-DD) — cursor |
 | `user_id` | String | Anthropic user ID — flattened from `user.id` |
 | `user_email` | String | User email — flattened from `user.email_address`; primary identity key |
@@ -702,7 +672,7 @@ One row per day. Incremental by `date`. Each API request covers up to 31 days.
 |-------|------|-------------|
 | `tenant_id` | UUID | Workspace isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Primary key — computed as `{date}:{project_id}` |
+| `unique_key` | String | Primary key — computed as `{date}:{project_id}` |
 | `date` | String | Activity date (YYYY-MM-DD) — cursor |
 | `project_id` | String | Normalized project ID (format `claude_proj_{id}`) |
 | `project_name` | String (nullable) | User-visible project name |
@@ -723,7 +693,7 @@ One row per `(date, project_id)`. Incremental by `date`.
 |-------|------|-------------|
 | `tenant_id` | UUID | Workspace isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Primary key — computed as `{date}:{skill_name}` |
+| `unique_key` | String | Primary key — computed as `{date}:{skill_name}` |
 | `date` | String | Activity date (YYYY-MM-DD) — cursor |
 | `skill_name` | String | Skill identifier |
 | `distinct_user_count` | Int64 (nullable) | Unique users who used skill that day |
@@ -744,7 +714,7 @@ One row per `(date, skill_name)`. Incremental by `date`.
 |-------|------|-------------|
 | `tenant_id` | UUID | Workspace isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Primary key — computed as `{date}:{connector_name}` |
+| `unique_key` | String | Primary key — computed as `{date}:{connector_name}` |
 | `date` | String | Activity date (YYYY-MM-DD) — cursor |
 | `connector_name` | String | Normalized connector name (e.g., "atlassian" covers multiple naming variants) |
 | `distinct_user_count` | Int64 (nullable) | Unique users who invoked connector that day |

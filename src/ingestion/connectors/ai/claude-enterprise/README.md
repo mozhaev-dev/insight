@@ -89,7 +89,7 @@ The other streams (`summaries`, `skills`, `connectors`) are pre-aggregated by th
 
 ## Silver Targets
 
-**None for this iteration.** Bronze only. `descriptor.yaml` lists `silver_targets: []` to make this explicit. Silver routing (to `class_ai_*` streams) is future work — see [DESIGN §4 Silver / Gold Mappings](../../../../../docs/components/connectors/ai/claude-enterprise/specs/DESIGN.md#silver--gold-mappings).
+**None for this iteration.** Bronze only. `descriptor.yaml` sets `dbt_select: ""` to make this explicit (`silver_targets` is prohibited per Connector Spec §4.10). Silver routing (to `class_ai_*` streams) is future work — see [DESIGN §4 Silver / Gold Mappings](../../../../../docs/components/connectors/ai/claude-enterprise/specs/DESIGN.md#silver--gold-mappings).
 
 ## Operational Constraints
 
@@ -101,8 +101,8 @@ The other streams (`summaries`, `skills`, `connectors`) are pre-aggregated by th
 ## Validation
 
 ```bash
-cypilot validate --artifact docs/components/connectors/ai/claude-enterprise/../../../../../docs/components/connectors/ai/claude-enterprise/specs/PRD.md
-cypilot validate --artifact docs/components/connectors/ai/claude-enterprise/../../../../../docs/components/connectors/ai/claude-enterprise/specs/DESIGN.md
+cypilot validate --artifact docs/components/connectors/ai/claude-enterprise/specs/PRD.md
+cypilot validate --artifact docs/components/connectors/ai/claude-enterprise/specs/DESIGN.md
 ```
 
 ## Related

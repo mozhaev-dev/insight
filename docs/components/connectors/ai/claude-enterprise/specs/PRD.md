@@ -315,6 +315,8 @@ The connector **MUST** support incremental sync for connector adoption using the
 
 - [ ] `p2` - **ID**: `cpt-insightspec-fr-claude-enterprise-collection-runs`
 
+> **Phase 1 deferral**: The collection-runs stream is NOT emitted by the Airbyte connector manifest. In Phase 1, operational monitoring is provided by the Argo orchestrator pipeline, which produces one workflow run record per pipeline execution (capturing sync status, duration, and dbt outcome). The connector-level `collection_runs` stream with per-stream record counts and API call metrics is deferred to Phase 2 when richer instrumentation is needed. This deferral is consistent with the Confluence connector (same approach per DESIGN §3.7 note).
+
 The connector **MUST** produce a collection-run log entry for each execution, recording `run_id`, `started_at`, `completed_at`, `status`, per-stream record counts, `api_calls`, `errors`, and `settings`.
 
 **Rationale**: Operational visibility into connector health. Enables alerting on failed runs, quota watching, and data-completeness audits over time.
