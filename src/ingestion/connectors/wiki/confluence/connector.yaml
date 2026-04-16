@@ -367,3 +367,9 @@ spec:
         maximum: 250
         order: 6
     additionalProperties: true
+
+metadata:
+  autoImportSchema:
+    wiki_spaces: true
+    wiki_pages: true
+    wiki_page_versions: true
