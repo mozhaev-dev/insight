@@ -53,10 +53,10 @@ metrics.
 ## Running
 
 ```bash
-# full chain from any git source to metrics
+# full chain from any git source to metrics (traverses via ref edges)
 dbt run --select tag:github+         # or tag:bitbucket-cloud+
-# just the derived layer
-dbt run --select tag:silver-git+
+# all silver models (class + fct + mtr across every domain)
+dbt run --select tag:silver
 ```
 
 ## Caveats

@@ -1,7 +1,7 @@
 {{ config(
     materialized='table',
     schema='silver',
-    tags=['silver-git']
+    tags=['silver']
 ) }}
 
 WITH commits AS (

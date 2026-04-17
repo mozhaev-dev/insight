@@ -2,7 +2,7 @@
     materialized='incremental',
     unique_key='unique_key',
     schema='silver',
-    tags=['silver-git']
+    tags=['silver']
 ) }}
 
 SELECT
