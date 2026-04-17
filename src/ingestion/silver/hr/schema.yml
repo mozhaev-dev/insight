@@ -3,6 +3,11 @@ version: 2
 models:
   - name: class_hr_working_hours
     description: "Scheduled working hours per active employee from all HR sources"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - insight_tenant_id
+            - email
     columns:
       - name: insight_tenant_id
         tests:
@@ -49,8 +54,7 @@ models:
         tests:
           - not_null
       - name: end_date
-        tests:
-          - not_null
+        description: "Leave end date; NULL for open-ended leaves"
       - name: source
         tests:
           - not_null
@@ -59,14 +63,11 @@ models:
     description: >
       Daily pre-aggregation of focus_time_pct and dev_time_h per active employee.
       Joins class_comms_events (Zoom meeting participations) with class_hr_working_hours.
-      One row per person per working day. Incremental — appends new days only.
+      One row per person per working day. Incremental with 3-day lookback for late events.
+      Users without HR working hours data default to 8h/day.
     columns:
       - name: insight_tenant_id
         description: "Tenant isolation field"
-        tests:
-          - not_null
-      - name: source_id
-        description: "Source instance identifier"
         tests:
           - not_null
       - name: unique_key
@@ -91,7 +92,7 @@ models:
         tests:
           - not_null
       - name: working_hours_per_day
-        description: "Scheduled working hours from class_hr_working_hours"
+        description: "Scheduled working hours from class_hr_working_hours; defaults to 8.0 if missing"
         tests:
           - not_null
       - name: focus_time_pct

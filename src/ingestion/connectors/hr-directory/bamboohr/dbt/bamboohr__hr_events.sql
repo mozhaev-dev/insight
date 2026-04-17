@@ -27,3 +27,5 @@ LEFT JOIN {{ source('bamboohr', 'employees') }} e
     ON lr.employeeId = e.id
     AND lr.tenant_id = e.tenant_id
 WHERE lr.employeeId IS NOT NULL
+  AND parseDateTimeBestEffortOrNull(lr.start) IS NOT NULL
+  AND parseDateTimeBestEffortOrNull(lr.end)   IS NOT NULL

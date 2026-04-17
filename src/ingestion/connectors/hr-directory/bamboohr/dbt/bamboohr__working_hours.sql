@@ -10,7 +10,7 @@ SELECT
     unique_key,
     id                        AS source_person_id,
     workEmail                 AS email,
-    displayName               AS display_name,
+    COALESCE(displayName, workEmail) AS display_name,
     employmentHistoryStatus   AS employment_type,
     'bamboohr'                AS source,
     -- standardHoursPerWeek is not provided by this tenant; defaulting to 8h/day full-time
@@ -19,4 +19,5 @@ SELECT
     _airbyte_extracted_at     AS ingested_at
 FROM {{ source('bamboohr', 'employees') }}
 WHERE status = 'Active'
+  AND id IS NOT NULL
   AND workEmail IS NOT NULL
