@@ -8,7 +8,6 @@ from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.http import HttpSubStream
 
 from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key
-from source_bitbucket_cloud.streams.pr_comments import _translate_to_pr_state
 
 
 logger = logging.getLogger("airbyte")
@@ -42,28 +41,37 @@ class PRCommitsStream(HttpSubStream, BitbucketCloudStream):
         cursor_field: Optional[list] = None,
         stream_state: Optional[Mapping[str, Any]] = None,
     ) -> Iterable[Optional[Mapping[str, Any]]]:
+        # Iterate parent via stream_slices + read_records directly (not via
+        # HttpSubStream/read_only_records) — Stream.read() overrides incoming
+        # stream_state with self.state, skipping PRs the child still needs
+        # after a mid-stream crash. read_records honours the passed state.
         state = stream_state or {}
-        translated = _translate_to_pr_state(state, self.cursor_field)
         total = 0
         skipped_unchanged = 0
 
-        for parent_slice in super().stream_slices(
-            sync_mode=sync_mode, cursor_field=cursor_field, stream_state=translated,
+        for repo_slice in self.parent.stream_slices(
+            sync_mode=SyncMode.full_refresh, cursor_field=None, stream_state={},
         ):
-            pr = parent_slice["parent"]
-            total += 1
-            workspace = pr["workspace"]
-            slug = pr["repo_slug"]
-            pr_id = pr["id"]
-            pr_updated_on = pr.get("updated_on", "") or ""
-            partition_key = f"{workspace}/{slug}/{pr_id}"
+            for pr in self.parent.read_records(
+                sync_mode=SyncMode.full_refresh,
+                stream_slice=repo_slice,
+                stream_state={},
+            ):
+                if not isinstance(pr, Mapping):
+                    continue
+                total += 1
+                workspace = pr.get("workspace", "")
+                slug = pr.get("repo_slug", "")
+                pr_id = pr.get("id")
+                pr_updated_on = pr.get("updated_on", "") or ""
+                partition_key = f"{workspace}/{slug}/{pr_id}"
 
-            synced_at = (state.get(partition_key, {}) or {}).get(self.cursor_field, "") or ""
-            if pr_updated_on and synced_at and pr_updated_on <= synced_at:
-                skipped_unchanged += 1
-                continue
+                synced_at = (state.get(partition_key, {}) or {}).get(self.cursor_field, "") or ""
+                if pr_updated_on and synced_at and pr_updated_on <= synced_at:
+                    skipped_unchanged += 1
+                    continue
 
-            yield {"parent": pr}
+                yield {"parent": pr}
 
         logger.info(
             f"pull_request_commits: {total - skipped_unchanged} PRs to fetch "

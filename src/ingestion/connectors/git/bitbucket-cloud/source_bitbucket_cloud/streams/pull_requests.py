@@ -80,33 +80,44 @@ class PullRequestsStream(HttpSubStream, BitbucketCloudStream):
         cursor_field: Optional[list] = None,
         stream_state: Optional[Mapping[str, Any]] = None,
     ) -> Iterable[Optional[Mapping[str, Any]]]:
+        # Iterate parent via stream_slices + read_records directly (not via
+        # HttpSubStream/read_only_records) — Stream.read() in CDK 7.x overrides
+        # the incoming stream_state with self.state (parent's persistent cursor),
+        # which skips slices that the child still needs to process after a
+        # mid-stream crash. read_records() honours the passed stream_state.
         state = stream_state or {}
         slice_count = 0
-        for parent_slice in super().stream_slices(
-            sync_mode=sync_mode, cursor_field=cursor_field, stream_state=stream_state,
+        for repo_slice in self.parent.stream_slices(
+            sync_mode=SyncMode.full_refresh, cursor_field=None, stream_state={},
         ):
-            repo = (parent_slice or {}).get("parent") or {}
-            workspace = repo.get("workspace")
-            slug = repo.get("slug")
-            if not workspace or not slug:
-                logger.warning(
-                    f"pull_requests: skipping parent_slice missing workspace/slug: {parent_slice!r}"
+            for repo_record in self.parent.read_records(
+                sync_mode=SyncMode.full_refresh,
+                stream_slice=repo_slice,
+                stream_state={},
+            ):
+                if not isinstance(repo_record, Mapping):
+                    continue
+                workspace = repo_record.get("workspace")
+                slug = repo_record.get("slug")
+                if not workspace or not slug:
+                    logger.warning(
+                        f"pull_requests: skipping repo missing workspace/slug: {repo_record!r}"
+                    )
+                    continue
+                partition_key = f"{workspace}/{slug}"
+                cursor = (state.get(partition_key, {}) or {}).get(self.cursor_field, "") or ""
+                # Reset per-slice so a prior early-exit doesn't leak into this repo.
+                self._stop_pagination = False
+                slice_count += 1
+                logger.info(
+                    f"pull_requests: slice={partition_key} cursor={cursor or '<none>'} "
+                    f"start_date={self._start_date or '<none>'}"
                 )
-                continue
-            partition_key = f"{workspace}/{slug}"
-            cursor = (state.get(partition_key, {}) or {}).get(self.cursor_field, "") or ""
-            # Reset per-slice so a prior early-exit doesn't leak into this repo.
-            self._stop_pagination = False
-            slice_count += 1
-            logger.info(
-                f"pull_requests: slice={partition_key} cursor={cursor or '<none>'} "
-                f"start_date={self._start_date or '<none>'}"
-            )
-            yield {
-                "parent": repo,
-                "cursor_value": cursor,
-                "partition_key": partition_key,
-            }
+                yield {
+                    "parent": repo_record,
+                    "cursor_value": cursor,
+                    "partition_key": partition_key,
+                }
         logger.info(f"pull_requests: iterated {slice_count} repo slices")
 
     # ------------------------------------------------------------------
