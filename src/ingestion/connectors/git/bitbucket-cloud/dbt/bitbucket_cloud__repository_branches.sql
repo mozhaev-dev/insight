@@ -12,7 +12,7 @@ SELECT
     COALESCE(workspace, '') AS project_key,
     COALESCE(repo_slug, '') AS repo_slug,
     COALESCE(name, '') AS branch_name,
-    if(name = mainbranch_name, 1, 0) AS is_default,
+    if(is_default, 1, 0) AS is_default,
     COALESCE(target_hash, '') AS last_commit_hash,
     parseDateTimeBestEffortOrNull(target_date) AS last_commit_date,
     'insight_bitbucket_cloud' AS data_source,

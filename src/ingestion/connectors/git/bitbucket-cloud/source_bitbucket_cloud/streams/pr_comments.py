@@ -23,7 +23,11 @@ class PRCommentsStream(HttpSubStream, BitbucketCloudStream):
 
     name = "pull_request_comments"
     cursor_field = "pull_request_updated_on"
-    state_checkpoint_interval = 500
+    # Per-record get_updated_state marks the whole PR synced; mid-slice
+    # checkpointing would therefore complete a PR after comment #1 and
+    # drop remaining comments on crash. State persists only at slice
+    # (per-PR) boundaries.
+    state_checkpoint_interval = None
     ignore_404 = True
 
     def _path(self, stream_slice: Optional[Mapping[str, Any]] = None) -> str:
@@ -143,7 +147,7 @@ class PRCommentsStream(HttpSubStream, BitbucketCloudStream):
         workspace = latest_record.get("workspace", "")
         slug = latest_record.get("repo_slug", "")
         pr_id = latest_record.get("pr_id")
-        if not (workspace and slug and pr_id):
+        if not (workspace and slug) or pr_id is None:
             return current_stream_state
         partition_key = f"{workspace}/{slug}/{pr_id}"
         pr_updated_on = latest_record.get(self.cursor_field, "") or ""

@@ -6,6 +6,7 @@ retries via should_retry/backoff_time.
 """
 
 import logging
+import random
 from abc import ABC
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, MutableMapping, Optional
@@ -32,6 +33,23 @@ _logger = logging.getLogger("airbyte")
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_start_date(value: Optional[str]) -> Optional[str]:
+    """Accept YYYY-MM-DD or full ISO 8601; return YYYY-MM-DD.
+
+    start_date is compared against `record_timestamp[:10]` in streams, so the
+    RHS must be exactly 10 chars. Caller may hand us a bare date or a full
+    ISO timestamp — normalize once at startup so the comparison is sound.
+    Raises ValueError on unparseable input: fail config rather than drift cursors.
+    """
+    if not value:
+        return None
+    if len(value) == 10 and value[4] == "-" and value[7] == "-":
+        datetime.strptime(value, "%Y-%m-%d")
+        return value
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt.date().isoformat()
 
 
 def _make_unique_key(tenant_id: str, source_id: str, *parts: str) -> str:
@@ -99,10 +117,6 @@ class BitbucketCloudStream(HttpStream, ABC):
     # ------------------------------------------------------------------
     # Requests
     # ------------------------------------------------------------------
-
-    @property
-    def request_timeout(self) -> Optional[int]:
-        return 60
 
     def request_headers(self, **kwargs: Any) -> Mapping[str, Any]:
         return auth_headers(self._token, self._username)
@@ -180,18 +194,32 @@ class BitbucketCloudStream(HttpStream, ABC):
 
     def backoff_time(self, response: requests.Response) -> Optional[float]:
         if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
             try:
-                wait = max(float(response.headers.get("Retry-After", 60)), 1.0)
+                wait = max(float(retry_after), 1.0) if retry_after else 60.0
             except (TypeError, ValueError):
                 wait = 60.0
             _logger.warning(
-                f"{self.name}: 429 throttled, backing off {wait}s (Retry-After="
-                f"{response.headers.get('Retry-After')!r})"
+                f"{self.name}: 429 throttled, backing off {wait}s "
+                f"(Retry-After={retry_after!r})"
             )
             return wait
         if response.status_code in (500, 502, 503, 504):
-            _logger.warning(f"{self.name}: {response.status_code}, backing off 30s")
-            return 30.0
+            # Honor Retry-After on 5xx if the origin/CDN supplies one; otherwise
+            # 30s + small jitter to avoid thundering-herd on recovery.
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    wait = max(float(retry_after), 1.0)
+                except (TypeError, ValueError):
+                    wait = 30.0 + random.uniform(0, 10)
+            else:
+                wait = 30.0 + random.uniform(0, 10)
+            _logger.warning(
+                f"{self.name}: {response.status_code}, backing off {wait:.1f}s "
+                f"(Retry-After={retry_after!r})"
+            )
+            return wait
         return None
 
     # ------------------------------------------------------------------

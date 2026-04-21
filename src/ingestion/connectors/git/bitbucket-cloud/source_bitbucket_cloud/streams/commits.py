@@ -11,8 +11,9 @@ Three load-bearing optimizations (paired, not independent):
    preserve author_date (cursor alone would silently miss rewritten commits).
 3. **Bloom filter cross-branch pagination-stop**: once a feature branch
    re-enters main's shared history, stop paginating. Bounded to ~17MB
-   (10M shas × 0.1% FP). A false positive only stops pagination one page
-   early; destination dedupes by unique_key so no correctness risk.
+   (10M shas x 0.1% FP). Bloom hits are advisory — records are always
+   emitted (destination dedupes by unique_key) so a false positive only
+   costs one extra page of pagination, never dropped data.
 
 Default branch is iterated first within each repo so the bloom fills with
 main's history before feature branches iterate.
@@ -26,7 +27,12 @@ from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.http import HttpSubStream
 from pybloom_live import BloomFilter
 
-from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key, _truncate
+from source_bitbucket_cloud.streams.base import (
+    BitbucketCloudStream,
+    _make_unique_key,
+    _normalize_start_date,
+    _truncate,
+)
 
 
 logger = logging.getLogger("airbyte")
@@ -42,7 +48,12 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
     name = "commits"
     cursor_field = "date"
     use_cache = True
-    state_checkpoint_interval = 1000
+    # Commits API returns newest-first per branch: mid-slice checkpointing
+    # would persist the HEAD cursor after record #1 and a crash before
+    # slice completion would mark the branch fully synced via the HEAD-guard
+    # below, skipping all older commits. State persists only at slice
+    # (per-branch) boundaries.
+    state_checkpoint_interval = None
 
     def __init__(
         self,
@@ -51,7 +62,7 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
         **kwargs: Any,
     ) -> None:
         super().__init__(parent=parent, **kwargs)
-        self._start_date = start_date
+        self._start_date = _normalize_start_date(start_date)
         self._bloom: Optional[BloomFilter] = None
         self._current_repo_key: Optional[tuple] = None
         self._stop_pagination: bool = False
@@ -135,9 +146,11 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
             current_head = branch.get("target_hash", "") or ""
             current_head_date = branch.get("target_date", "") or ""
 
-            # HEAD-unchanged skip — safe only when cursor has also reached HEAD's
-            # commit date. A partial run stores head_sha per-record (optimistic),
-            # so head-match alone isn't proof the branch is fully processed.
+            # HEAD-unchanged skip — branch is fully synced iff stored HEAD
+            # matches the live HEAD AND stored cursor has reached HEAD's
+            # commit date. Slice-atomic state (state_checkpoint_interval=None)
+            # guarantees stored_cursor only reflects a fully-completed
+            # pagination, so this guard is sound.
             if (
                 stored_head
                 and current_head
@@ -244,11 +257,13 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
                 )
                 return
 
+            # Bloom membership is advisory — always emit the record so a
+            # 0.1% false positive cannot drop a real commit. Destination
+            # dedupes by unique_key. Bloom hits only signal pagination-stop.
             if commit_hash and commit_hash in self._bloom:
                 hit_seen = True
                 bloom_hits += 1
-                continue
-            if commit_hash:
+            elif commit_hash:
                 self._bloom.add(commit_hash)
             emitted += 1
 

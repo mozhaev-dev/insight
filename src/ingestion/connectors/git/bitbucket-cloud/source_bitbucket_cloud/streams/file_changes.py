@@ -33,7 +33,11 @@ class FileChangesStream(HttpSubStream, BitbucketCloudStream):
 
     name = "file_changes"
     cursor_field = "committed_date"
-    state_checkpoint_interval = 500
+    # cursor advances on the first diffstat row of each commit; mid-slice
+    # checkpointing would therefore mark a commit done after file #1
+    # and drop remaining files on crash. State persists only at slice
+    # (per-commit) boundaries.
+    state_checkpoint_interval = None
     ignore_404 = True
 
     def __init__(

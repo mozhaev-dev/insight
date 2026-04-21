@@ -27,7 +27,11 @@ class RepositoriesStream(BitbucketCloudStream):
     name = "repositories"
     cursor_field = "updated_on"
     use_cache = True
-    state_checkpoint_interval = 100
+    # Descending API sort (sort=-updated_on): mid-slice checkpointing would
+    # persist the NEWEST cursor after record #1 and a crash before slice
+    # completion would cause the next run to skip all remaining (older)
+    # records. State persists only at slice (workspace) boundaries.
+    state_checkpoint_interval = None
 
     def __init__(
         self,

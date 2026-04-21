@@ -6,7 +6,12 @@ from typing import Any, Iterable, Mapping, MutableMapping, Optional
 from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.http import HttpSubStream
 
-from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key, _truncate
+from source_bitbucket_cloud.streams.base import (
+    BitbucketCloudStream,
+    _make_unique_key,
+    _normalize_start_date,
+    _truncate,
+)
 
 
 logger = logging.getLogger("airbyte")
@@ -23,7 +28,11 @@ class PullRequestsStream(HttpSubStream, BitbucketCloudStream):
     name = "pull_requests"
     cursor_field = "updated_on"
     use_cache = True
-    state_checkpoint_interval = 500
+    # Descending API sort (sort=-updated_on): mid-slice checkpointing would
+    # persist the NEWEST cursor after record #1 and a crash before slice
+    # completion would cause the next run to skip all remaining (older)
+    # records. State persists only at slice (per-repo) boundaries.
+    state_checkpoint_interval = None
 
     # PRs API doesn't accept a generic ``pagelen`` for big pages — keep 50.
     page_size = 50
@@ -35,7 +44,7 @@ class PullRequestsStream(HttpSubStream, BitbucketCloudStream):
         **kwargs: Any,
     ) -> None:
         super().__init__(parent=parent, **kwargs)
-        self._start_date = start_date
+        self._start_date = _normalize_start_date(start_date)
         self._stop_pagination: bool = False
 
     # ------------------------------------------------------------------

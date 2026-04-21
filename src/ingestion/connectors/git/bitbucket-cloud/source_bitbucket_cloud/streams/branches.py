@@ -7,6 +7,7 @@ from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.http import HttpSubStream
 
 from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key
+from source_bitbucket_cloud.streams.repositories import RepositoriesStream
 
 logger = logging.getLogger("airbyte")
 
@@ -25,9 +26,17 @@ class BranchesStream(HttpSubStream, BitbucketCloudStream):
     name = "branches"
     cursor_field = "target_date"
     use_cache = True
-    state_checkpoint_interval = 500
+    # Descending API sort (sort=-target.date): mid-slice checkpointing would
+    # persist the NEWEST cursor after record #1 and a crash before slice
+    # completion would cause the next run to skip all remaining (older)
+    # records. State persists only at slice (per-repo) boundaries.
+    state_checkpoint_interval = None
 
-    def __init__(self, parent, **kwargs: Any) -> None:
+    def __init__(self, parent: RepositoriesStream, **kwargs: Any) -> None:
+        """Parent slice records must carry: workspace, slug, mainbranch_name,
+        updated_on. Parse failures here produce clear KeyError at parse_response
+        rather than silent data issues downstream.
+        """
         super().__init__(parent=parent, **kwargs)
         self._stop_pagination: bool = False
 
