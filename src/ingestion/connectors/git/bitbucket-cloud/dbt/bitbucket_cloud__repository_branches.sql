@@ -13,8 +13,8 @@ SELECT
     COALESCE(repo_slug, '') AS repo_slug,
     COALESCE(name, '') AS branch_name,
     if(name = mainbranch_name, 1, 0) AS is_default,
-    COALESCE(JSONExtractString(target, 'hash'), '') AS last_commit_hash,
-    parseDateTimeBestEffortOrNull(updated_on) AS last_commit_date,
+    COALESCE(target_hash, '') AS last_commit_hash,
+    parseDateTimeBestEffortOrNull(target_date) AS last_commit_date,
     'insight_bitbucket_cloud' AS data_source,
     toUnixTimestamp64Milli(now64()) AS _version,
     _airbyte_extracted_at

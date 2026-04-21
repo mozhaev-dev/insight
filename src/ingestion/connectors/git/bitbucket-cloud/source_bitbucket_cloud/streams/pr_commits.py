@@ -1,7 +1,6 @@
 """Bitbucket Cloud PR commits stream (incremental, per-PR, HttpSubStream of pull_requests)."""
 
 import logging
-import re
 from typing import Any, Iterable, Mapping, MutableMapping, Optional
 
 from airbyte_cdk.models import SyncMode
@@ -11,8 +10,6 @@ from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_uniq
 
 
 logger = logging.getLogger("airbyte")
-
-_AUTHOR_RAW_RE = re.compile(r"^(.*?)\s*<([^>]+)>\s*$")
 
 
 class PRCommitsStream(HttpSubStream, BitbucketCloudStream):
@@ -97,16 +94,11 @@ class PRCommitsStream(HttpSubStream, BitbucketCloudStream):
             if not commit_hash:
                 continue
             emitted += 1
-            author = commit.get("author") or {}
-            author_raw = author.get("raw", "") or ""
-            author_user = author.get("user") or {}
-            author_name = author_raw
-            author_email = None
-            m = _AUTHOR_RAW_RE.match(author_raw)
-            if m:
-                author_name = m.group(1).strip()
-                author_email = m.group(2).strip()
+            author_user = (commit.get("author") or {}).get("user") or {}
 
+            # message/date/author_name/author_email intentionally omitted:
+            # the `commits` stream carries the full commit record, joined
+            # downstream by hash. Only hash + PR linkage is needed here.
             record = {
                 "unique_key": _make_unique_key(
                     self._tenant_id, self._source_id,
@@ -114,14 +106,7 @@ class PRCommitsStream(HttpSubStream, BitbucketCloudStream):
                 ),
                 "pr_id": pr_id,
                 "hash": commit_hash,
-                "message": commit.get("message"),
-                "date": commit.get("date"),
-                "author_raw": author_raw,
-                "author_name": author_name,
-                "author_email": author_email,
-                "author_display_name": author_user.get("display_name"),
                 "author_uuid": author_user.get("uuid"),
-                "author_nickname": author_user.get("nickname"),
                 "pull_request_updated_on": pr_updated_on,
                 "workspace": workspace,
                 "repo_slug": slug,
@@ -152,7 +137,7 @@ class PRCommitsStream(HttpSubStream, BitbucketCloudStream):
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
-            "additionalProperties": True,
+            "additionalProperties": False,
             "properties": {
                 "tenant_id": {"type": "string"},
                 "source_id": {"type": "string"},
@@ -161,14 +146,7 @@ class PRCommitsStream(HttpSubStream, BitbucketCloudStream):
                 "collected_at": {"type": "string"},
                 "pr_id": {"type": ["null", "integer"]},
                 "hash": {"type": ["null", "string"]},
-                "message": {"type": ["null", "string"]},
-                "date": {"type": ["null", "string"]},
-                "author_raw": {"type": ["null", "string"]},
-                "author_name": {"type": ["null", "string"]},
-                "author_email": {"type": ["null", "string"]},
-                "author_display_name": {"type": ["null", "string"]},
                 "author_uuid": {"type": ["null", "string"]},
-                "author_nickname": {"type": ["null", "string"]},
                 "pull_request_updated_on": {"type": ["null", "string"]},
                 "workspace": {"type": "string"},
                 "repo_slug": {"type": "string"},

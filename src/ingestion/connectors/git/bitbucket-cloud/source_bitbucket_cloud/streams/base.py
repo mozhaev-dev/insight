@@ -38,6 +38,32 @@ def _make_unique_key(tenant_id: str, source_id: str, *parts: str) -> str:
     return f"{tenant_id}:{source_id}:{':'.join(parts)}"
 
 
+_TRUNCATE_SUFFIX = "…[truncated]"
+_TRUNCATE_LIMIT = 2_048  # 2 KB UTF-8
+
+
+def _truncate(text: Optional[str], limit: int = _TRUNCATE_LIMIT) -> Optional[str]:
+    """Cap text at `limit` UTF-8 bytes, appending a suffix when cut.
+
+    Bitbucket PR bodies, commit messages and review comments are unbounded;
+    a pathological record would otherwise balloon destination aggregation
+    buffers and OOM the ClickHouse pod (job 89 root cause).
+    """
+    if text is None:
+        return None
+    suffix = _TRUNCATE_SUFFIX
+    suffix_bytes = suffix.encode("utf-8")
+    budget = limit - len(suffix_bytes)
+    if budget <= 0:
+        # Limit smaller than suffix itself — byte-slice the suffix directly.
+        return suffix_bytes[:limit].decode("utf-8", errors="ignore")
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return text
+    # Trim dangling partial multi-byte char.
+    return encoded[:budget].decode("utf-8", errors="ignore") + suffix
+
+
 class BitbucketCloudStream(HttpStream, ABC):
     """Base for all Bitbucket Cloud streams.
 

@@ -6,7 +6,7 @@ from typing import Any, Iterable, Mapping, MutableMapping, Optional
 from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.http import HttpSubStream
 
-from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key
+from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key, _truncate
 
 
 logger = logging.getLogger("airbyte")
@@ -114,13 +114,11 @@ class PRCommentsStream(HttpSubStream, BitbucketCloudStream):
                 ),
                 "comment_id": comment_id,
                 "pr_id": pr_id,
-                "body": content.get("raw"),
-                "body_html": content.get("html"),
+                "body": _truncate(content.get("raw")),
                 "created_on": comment.get("created_on"),
                 "updated_on": comment.get("updated_on"),
                 "author_display_name": user.get("display_name"),
                 "author_uuid": user.get("uuid"),
-                "author_nickname": user.get("nickname"),
                 "is_inline": inline is not None,
                 "inline_path": (inline or {}).get("path"),
                 "inline_from": (inline or {}).get("from"),
@@ -157,7 +155,7 @@ class PRCommentsStream(HttpSubStream, BitbucketCloudStream):
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
-            "additionalProperties": True,
+            "additionalProperties": False,
             "properties": {
                 "tenant_id": {"type": "string"},
                 "source_id": {"type": "string"},
@@ -167,12 +165,10 @@ class PRCommentsStream(HttpSubStream, BitbucketCloudStream):
                 "comment_id": {"type": ["null", "integer"]},
                 "pr_id": {"type": ["null", "integer"]},
                 "body": {"type": ["null", "string"]},
-                "body_html": {"type": ["null", "string"]},
                 "created_on": {"type": ["null", "string"]},
                 "updated_on": {"type": ["null", "string"]},
                 "author_display_name": {"type": ["null", "string"]},
                 "author_uuid": {"type": ["null", "string"]},
-                "author_nickname": {"type": ["null", "string"]},
                 "is_inline": {"type": ["null", "boolean"]},
                 "inline_path": {"type": ["null", "string"]},
                 "inline_from": {"type": ["null", "integer"]},

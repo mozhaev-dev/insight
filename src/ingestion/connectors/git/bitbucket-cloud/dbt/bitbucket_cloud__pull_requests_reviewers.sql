@@ -21,7 +21,7 @@ SELECT
     toUnixTimestamp64Milli(now64()) AS _version,
     pr._airbyte_extracted_at
 FROM {{ source('bronze_bitbucket_cloud', 'pull_requests') }} AS pr
-ARRAY JOIN JSONExtractArrayRaw(COALESCE(pr.participants, '[]')) AS p
+ARRAY JOIN JSONExtractArrayRaw(COALESCE(toString(pr.participants), '[]')) AS p
 WHERE JSONExtractString(p, 'role') = 'REVIEWER'
 {% if is_incremental() %}
 AND pr._airbyte_extracted_at > (SELECT max(_airbyte_extracted_at) FROM {{ this }})

@@ -26,7 +26,7 @@ from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.http import HttpSubStream
 from pybloom_live import BloomFilter
 
-from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key
+from source_bitbucket_cloud.streams.base import BitbucketCloudStream, _make_unique_key, _truncate
 
 
 logger = logging.getLogger("airbyte")
@@ -270,19 +270,17 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
                     self._tenant_id, self._source_id, workspace, slug, commit_hash,
                 ),
                 "hash": commit_hash,
-                "message": commit.get("message"),
+                "message": _truncate(commit.get("message")),
                 "date": commit_date,
                 "author_raw": author_raw,
                 "author_name": author_name,
                 "author_email": author_email,
                 "author_display_name": author_user.get("display_name"),
                 "author_uuid": author_user.get("uuid"),
-                "author_nickname": author_user.get("nickname"),
                 "parent_hashes": parent_hashes,
                 "workspace": workspace,
                 "repo_slug": slug,
                 "branch_name": branch_name,
-                "default_branch_name": default_branch,
                 "head_sha": head_sha,
             }
             yield self._envelope(record)
@@ -332,7 +330,7 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
-            "additionalProperties": True,
+            "additionalProperties": False,
             "properties": {
                 "tenant_id": {"type": "string"},
                 "source_id": {"type": "string"},
@@ -347,12 +345,10 @@ class CommitsStream(HttpSubStream, BitbucketCloudStream):
                 "author_email": {"type": ["null", "string"]},
                 "author_display_name": {"type": ["null", "string"]},
                 "author_uuid": {"type": ["null", "string"]},
-                "author_nickname": {"type": ["null", "string"]},
                 "parent_hashes": {"type": ["null", "array"], "items": {"type": "string"}},
                 "workspace": {"type": "string"},
                 "repo_slug": {"type": "string"},
                 "branch_name": {"type": "string"},
-                "default_branch_name": {"type": ["null", "string"]},
                 "head_sha": {"type": ["null", "string"]},
             },
         }

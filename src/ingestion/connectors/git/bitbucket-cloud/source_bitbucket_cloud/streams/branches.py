@@ -132,7 +132,6 @@ class BranchesStream(HttpSubStream, BitbucketCloudStream):
                     self._tenant_id, self._source_id, workspace, slug, branch_name,
                 ),
                 "name": branch_name,
-                "target": target,
                 "target_hash": target_hash,
                 "target_date": target_date,
                 "workspace": workspace,
@@ -172,7 +171,7 @@ class BranchesStream(HttpSubStream, BitbucketCloudStream):
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
-            "additionalProperties": True,
+            "additionalProperties": False,
             "properties": {
                 "tenant_id": {"type": "string"},
                 "source_id": {"type": "string"},
@@ -180,7 +179,6 @@ class BranchesStream(HttpSubStream, BitbucketCloudStream):
                 "data_source": {"type": "string"},
                 "collected_at": {"type": "string"},
                 "name": {"type": ["null", "string"]},
-                "target": {"type": ["null", "object"]},
                 "target_hash": {"type": ["null", "string"]},
                 "target_date": {"type": ["null", "string"]},
                 "workspace": {"type": "string"},
