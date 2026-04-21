@@ -209,7 +209,7 @@ graph TD
 The Cursor connector is packaged as a self-contained unit following the standard connector package layout:
 
 ```text
-src/ingestion/connectors/ai-dev/cursor/
+src/ingestion/connectors/ai/cursor/
 ├── connector.yaml          # Airbyte declarative manifest (nocode)
 ├── descriptor.yaml         # Package metadata: streams, Silver targets
 └── dbt/
@@ -730,7 +730,7 @@ Monitoring table — not an analytics source.
 The Cursor connector uses one manifest and two Airbyte connections with different schedules:
 
 ```text
-Package: src/ingestion/connectors/ai-dev/cursor/
+Package: src/ingestion/connectors/ai/cursor/
 ├── connector.yaml (declarative manifest — 6 streams)
 ├── descriptor.yaml (package metadata)
 └── dbt/ (Bronze → Silver)
@@ -976,4 +976,4 @@ Additional architectural decisions documented inline:
 - **ADRs**: [ADR/](./ADR/) (none yet — see ADR Status above)
 - **Source specification**: [../../cursor/cursor.md](../../cursor/cursor.md)
 - **Reference implementation**: [../../cursor/additional/](../../cursor/additional/) (production code, not part of connector)
-- **AI Dev Tool domain**: [docs/components/connectors/ai-dev/](../../)
+- **AI Tool domain**: [docs/components/connectors/ai/](../../)

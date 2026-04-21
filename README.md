@@ -138,8 +138,7 @@ docs/
 │   │   ├── collaboration/        ← Microsoft 365, Slack, Zoom, Zulip
 │   │   ├── wiki/                 ← Confluence, Outline
 │   │   ├── support/              ← Zendesk, Jira Service Management
-│   │   ├── ai-dev/               ← Cursor, Windsurf, GitHub Copilot, JetBrains
-│   │   ├── ai/                   ← Claude API, Claude Team, OpenAI API, ChatGPT Team
+│   │   ├── ai/                   ← Claude Admin, Claude Enterprise, Cursor, Windsurf, GitHub Copilot, JetBrains, OpenAI API, ChatGPT Team
 │   │   ├── hr-directory/         ← BambooHR, Workday, LDAP / Active Directory
 │   │   ├── crm/                  ← HubSpot, Salesforce
 │   │   ├── ui-design/            ← Figma
