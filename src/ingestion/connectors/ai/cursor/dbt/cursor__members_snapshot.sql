@@ -13,4 +13,4 @@
     source_ref=source('bronze_cursor', 'cursor_members'),
     unique_key_col='unique_key',
     check_cols=['name', 'role', 'isRemoved']
-) }})
+) }}
