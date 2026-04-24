@@ -10,6 +10,10 @@
 -- provisioned for the tenant, the JOIN is skipped at compile-time and
 -- author_email / last_editor_email fall back to NULL — Silver Step 2
 -- (Identity Resolution) maps author_id → person_id directly.
+--
+-- Scaling note: materialized as view with LEFT JOINs to spaces and users.
+-- Fine for MVP (thousands of pages). Promote to materialized='table' or
+-- 'incremental' once wiki_pages crosses ~100K rows per tenant.
 {{ config(
     materialized='view',
     schema='staging',
@@ -27,10 +31,14 @@ WITH pages AS (
         space_id,
         title,
         status,
-        author_id,
-        last_editor_id,
-        parent_page_id,
-        toUInt32(coalesce(version_number, 0))                              AS version_count,
+        -- Confluence connector.yaml emits '' when a field is absent from
+        -- the API response (authorId, parentId, etc). Normalise to NULL so
+        -- downstream "IS NULL" filters (e.g. top-level pages with no parent)
+        -- behave correctly and empty identifiers never reach Silver Step 2.
+        nullIf(author_id, '')                                               AS author_id,
+        nullIf(last_editor_id, '')                                          AS last_editor_id,
+        nullIf(parent_page_id, '')                                          AS parent_page_id,
+        toUInt32(coalesce(version_number, 0))                               AS version_count,
         parseDateTime64BestEffortOrNull(coalesce(created_at, ''), 3)        AS created_at,
         parseDateTime64BestEffortOrNull(coalesce(updated_at, ''), 3)        AS updated_at,
         parseDateTime64BestEffortOrNull(coalesce(collected_at, ''), 3)      AS collected_at

@@ -7,6 +7,11 @@
 -- Identity resolution: same pattern as confluence__wiki_pages — LEFT JOIN
 -- with bronze_jira.jira_user on accountId. Skipped at compile-time if Jira
 -- is not provisioned; author_email falls back to NULL.
+--
+-- Scaling note: materialized as view, which recomputes the versions → agg
+-- pipeline on every downstream query. Fine for MVP (tens of thousands of
+-- versions). Promote to materialized='incremental' keyed on (author_id, day)
+-- once wiki_page_versions grows past ~1M rows or Gold query latency rises.
 {{ config(
     materialized='view',
     schema='staging',
@@ -36,7 +41,10 @@ agg AS (
         source_id,
         author_id,
         day,
-        uniq(page_id)                                                       AS pages_edited,
+        -- uniqExact (not uniq): uniq is HyperLogLog and can miscount by a
+        -- full unit for small per-day page counts, directly skewing the
+        -- pages_edited metric. uniqExact is correct at this scale.
+        uniqExact(page_id)                                                  AS pages_edited,
         count()                                                             AS total_edits,
         countIf(version_number = 1)                                         AS pages_created,
         countIf(not minor_edit)                                             AS major_edits,
