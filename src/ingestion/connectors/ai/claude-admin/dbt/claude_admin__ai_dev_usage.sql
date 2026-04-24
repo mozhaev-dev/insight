@@ -98,3 +98,11 @@ LEFT JOIN api_keys k
     ON u.actor_type = 'api_actor'
    AND u.tenant_id = k.tenant_id
    AND u.identifier_lc = k.name_lc
+-- Drop orphan api_actor rows where the name could not be resolved to an
+-- api_key_id (deleted key, case/trim drift, delayed claude_admin_api_keys
+-- ingest). Without this guard, such rows would emit both email=NULL and
+-- api_key_id=NULL, polluting class_ai_dev_usage with activity that has no
+-- attributable identity. user rows are never orphaned — actor_identifier
+-- always carries the email.
+WHERE u.actor_type = 'user'
+   OR (u.actor_type = 'api_actor' AND k.api_key_id IS NOT NULL)

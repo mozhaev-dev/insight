@@ -99,8 +99,11 @@ office AS (
         'anthropic'                                 AS provider,
         'office'                                    AS channel,
         CAST(NULL AS Nullable(UInt32))              AS conversation_count,
-        toUInt32(coalesce(excel_message_count, 0)
-               + coalesce(powerpoint_message_count, 0)) AS message_count,
+        -- Nullable(UInt32) to match web / cowork branches — ClickHouse
+        -- UNION ALL type promotion across a non-nullable office column
+        -- is order-dependent and fragile.
+        CAST(coalesce(excel_message_count, 0)
+           + coalesce(powerpoint_message_count, 0) AS Nullable(UInt32)) AS message_count,
         CAST(NULL AS Nullable(UInt64))              AS input_tokens,
         CAST(NULL AS Nullable(UInt64))              AS output_tokens,
         CAST(NULL AS Nullable(UInt64))              AS cache_read_tokens,

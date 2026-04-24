@@ -94,9 +94,21 @@ models:
 
   - name: claude_admin__ai_dev_usage
     description: >
-      Bronze → Silver step 1: Claude Code per-user daily usage.
-      Feeds class_ai_dev_usage with tool='claude_code'. Filtered to
-      actor_type='user' so actor_identifier carries the user email.
+      Bronze → Silver step 1: Claude Code daily usage (per user or per
+      API-actor). Feeds class_ai_dev_usage with tool='claude_code'. Emits
+      both actor_type='user' rows (email populated from actor_identifier)
+      and actor_type='api_actor' rows (api_key_id resolved from
+      claude_admin_api_keys.name via JOIN; email NULL). api_actor rows
+      whose name cannot be resolved to an api_key_id are dropped to avoid
+      orphan-identity rows in Silver — Silver Step 2 (Identity Resolution)
+      then maps email / api_key_id → person_id.
+
+      Note: the initial PRD §5.7 required actor_type='user' only. Real
+      Virtuozzo data showed 100% of activity arrives as api_actor (the org
+      provisions named per-developer API keys), so strict user-only
+      filtering would yield zero rows in production. Dual-actor support
+      is the intended behaviour; the PRD clause is to be updated.
+
       Claude Code usage is also available in Enterprise but is sourced
       from Admin only, per the lead's merge rule.
     columns:
