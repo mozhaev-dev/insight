@@ -1,12 +1,17 @@
+-- depends_on: {{ ref('m365__collab_chat_activity') }}
+-- depends_on: {{ ref('slack__collab_chat_activity') }}
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
+    incremental_strategy='append',
+    order_by=['unique_key'],
     schema='silver',
     tags=['silver']
 ) }}
 
--- explicit dependency so dbt knows to run staging models first
--- depends_on: {{ ref('m365__collab_chat_activity') }}
--- depends_on: {{ ref('slack__collab_chat_activity') }}
-
-{{ union_by_tag('silver:class_collab_chat_activity') }}
+SELECT * FROM (
+    {{ union_by_tag('silver:class_collab_chat_activity') }}
+)
+{% if is_incremental() %}
+WHERE _version > (SELECT max(_version) FROM {{ this }})
+{% endif %}

@@ -20,6 +20,7 @@
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
+    order_by=['unique_key'],
     schema='staging',
     tags=['cursor', 'silver:class_ai_dev_usage']
 ) }}

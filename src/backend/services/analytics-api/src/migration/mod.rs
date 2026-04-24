@@ -1,7 +1,8 @@
 //! Database migrations for the Analytics API service.
 
 mod m20260414_000001_init;
-mod m20260417_000001_seed_metrics;
+mod m20260422_000001_seed_metrics;
+mod m20260423_000001_seed_metrics_honest_nulls;
 
 use sea_orm_migration::prelude::*;
 
@@ -12,7 +13,8 @@ impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
             Box::new(m20260414_000001_init::Migration),
-            Box::new(m20260417_000001_seed_metrics::Migration),
+            Box::new(m20260422_000001_seed_metrics::Migration),
+            Box::new(m20260423_000001_seed_metrics_honest_nulls::Migration),
         ]
     }
 }

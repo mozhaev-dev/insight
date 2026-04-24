@@ -1,6 +1,7 @@
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
+    order_by=['unique_key'],
     schema='staging',
     tags=['m365', 'silver:class_comms_events']
 ) }}
@@ -15,7 +16,8 @@ SELECT
     reportRefreshDate                    AS activity_date,
     CAST(NULL AS Nullable(String))       AS event_type,
     CAST(NULL AS Nullable(Int64))        AS duration_seconds,
-    'm365'                               AS source
+    'm365'                               AS source,
+    toUnixTimestamp64Milli(now64())       AS _version
 FROM {{ source('bronze_m365', 'email_activity') }}
 {% if is_incremental() %}
 WHERE reportRefreshDate > (SELECT max(activity_date) FROM {{ this }})

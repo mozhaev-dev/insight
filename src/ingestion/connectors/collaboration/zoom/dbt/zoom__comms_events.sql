@@ -1,6 +1,7 @@
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
+    order_by=['unique_key'],
     schema='staging',
     tags=['zoom', 'silver:class_comms_events']
 ) }}
@@ -17,7 +18,8 @@ SELECT
     if(p.join_time IS NOT NULL AND p.leave_time IS NOT NULL,
        dateDiff('second', parseDateTimeBestEffort(p.join_time), parseDateTimeBestEffort(p.leave_time)),
        0)                                AS duration_seconds,
-    'zoom'                               AS source
+    'zoom'                               AS source,
+    toUnixTimestamp64Milli(now64())       AS _version
 FROM (
     SELECT *
     FROM {{ source('bronze_zoom', 'participants') }}

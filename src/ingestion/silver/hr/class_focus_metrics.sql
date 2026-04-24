@@ -1,6 +1,7 @@
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
+    order_by=['unique_key'],
     schema='silver',
     tags=['silver']
 ) }}
@@ -34,7 +35,8 @@ SELECT
             sumIf(ce.duration_seconds, ce.event_type = 'meeting_participation') / 3600.0
         ),
         4
-    )                                                               AS dev_time_h
+    )                                                               AS dev_time_h,
+    toUnixTimestamp64Milli(now64())                                  AS _version
 FROM {{ ref('class_comms_events') }} ce
 LEFT JOIN {{ ref('class_hr_working_hours') }} wh
     ON lower(ce.user_email) = lower(wh.email)

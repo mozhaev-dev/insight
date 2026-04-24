@@ -16,6 +16,7 @@
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
+    order_by=['unique_key'],
     schema='staging',
     tags=['claude-admin', 'silver:class_ai_api_usage']
 ) }}
