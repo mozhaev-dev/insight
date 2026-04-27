@@ -85,7 +85,7 @@ CREATE VIEW insight.jira_person_daily
 AS SELECT
     lower(JSONExtractString(custom_fields_json, 'assignee', 'emailAddress')) AS person_id,
     toDate(parseDateTimeBestEffort(updated)) AS metric_date,
-    issue_type,
+    JSONExtractString(custom_fields_json, 'issuetype', 'name') AS issue_type,
     JSONExtractString(custom_fields_json, 'status', 'name') AS status_name,
     JSONExtractString(custom_fields_json, 'resolution', 'name') AS resolution,
     due_date,
@@ -121,7 +121,7 @@ SELECT
     lower(JSONExtractString(custom_fields_json, 'assignee', 'emailAddress')) AS person_id,
     toDate(parseDateTimeBestEffort(updated)) AS metric_date,
     count() AS tasks_closed,
-    countIf(issue_type = 'Bug') AS bugs_fixed,
+    countIf(JSONExtractString(custom_fields_json, 'issuetype', 'name') = 'Bug') AS bugs_fixed,
     countIf(due_date IS NOT NULL AND due_date != ''
             AND toDate(parseDateTimeBestEffort(updated)) <= toDate(due_date)) AS on_time_count,
     countIf(due_date IS NOT NULL AND due_date != '') AS has_due_date_count,
