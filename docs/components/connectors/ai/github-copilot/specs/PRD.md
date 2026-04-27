@@ -72,7 +72,7 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 **Capabilities**:
 
 - Extract seat roster from `GET /orgs/{org}/copilot/billing/seats` with full pagination
-- Extract per-user daily usage incrementally from the Copilot reports API, resolving `login` → `user_email` via seat join for identity resolution
+- Extract per-user daily usage incrementally from the Copilot reports API, resolving `user_login` → `user_email` via seat join for identity resolution
 - Extract org-level daily usage incrementally from the Copilot reports API
 - Incremental sync on `day` cursor for metrics streams; full refresh for seat roster
 
@@ -80,9 +80,10 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 
 | Term | Definition |
 |------|------------|
-| GitHub Copilot for Business / Enterprise | GitHub's AI coding assistant product tier available to organizations. Requires org-level enablement and a PAT with `manage_billing:copilot` scope for admin access. |
-| PAT (classic) | Personal Access Token (classic) — the only GitHub auth mechanism supporting `manage_billing:copilot` scope. Fine-grained PATs do not support this scope. |
-| `manage_billing:copilot` | PAT scope required for all Copilot Admin API endpoints. Only Organization Owners can create PATs with this scope. |
+| GitHub Copilot for Business / Enterprise | GitHub's AI coding assistant product tier available to organizations. Requires org-level enablement and a PAT with `manage_billing:copilot` and `read:org` scopes for admin access. |
+| PAT (classic) | Personal Access Token (classic) — the only GitHub auth mechanism supporting `manage_billing:copilot` and `read:org` scopes. Fine-grained PATs do not support these scopes. |
+| `manage_billing:copilot` | PAT scope required for the seats endpoint (`/copilot/billing/seats`). Only Organization Owners can create PATs with this scope. |
+| `read:org` | PAT scope additionally required for the metrics reports endpoints (`/copilot/metrics/reports/*`). |
 | Signed URL | Pre-authenticated HTTPS URL returned by the metrics endpoint, hosted on `copilot-reports.github.com`. The connector downloads NDJSON data from this URL without an `Authorization` header; URLs expire shortly after issuance. |
 | NDJSON | Newline-delimited JSON — response format from signed download URLs. Each line is a separate JSON object; the entire payload is not valid JSON. |
 | Seat | An assigned Copilot subscription slot for a specific GitHub user. Identified by `user_login` and `user_email`. |
@@ -107,7 +108,7 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 
 **ID**: `cpt-insightspec-actor-ghcopilot-org-owner`
 
-**Role**: Manages the GitHub organization's Copilot subscription and provisions seats. Creates the PAT with `manage_billing:copilot` scope required for the connector.
+**Role**: Manages the GitHub organization's Copilot subscription and provisions seats. Creates the PAT with `manage_billing:copilot` and `read:org` scopes required for the connector.
 
 **Needs**: Evidence that the connector does not write to GitHub; confirmation that the PAT scope is read-only.
 
@@ -152,7 +153,9 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 ### 3.1 Module-Specific Environment Constraints
 
 - Requires outbound HTTPS access to `api.github.com` (authentication + metrics envelope fetch) and `copilot-reports.github.com` (NDJSON payload download).
-- Authentication to `api.github.com` via PAT (classic) with `manage_billing:copilot` scope, sent via `Authorization: Bearer {token}`. Only Organization Owners can create tokens with this scope; fine-grained PATs do not support it.
+- Authentication to `api.github.com` via PAT (classic) with `manage_billing:copilot` **and `read:org`** scopes, sent via `Authorization: Bearer {token}`. `manage_billing:copilot` is required for the seats endpoint; `read:org` is additionally required for the metrics reports endpoints. Only Organization Owners can create tokens with these scopes; fine-grained PATs do not support them.
+- The metrics reports API returns HTTP 204 (No Content) when no data exists for the requested day (e.g., dates before 2025-10-10 or future dates). The connector **MUST** treat HTTP 204 as a valid empty response — emit 0 records for that day and advance the cursor.
+- The Copilot reports API only has data from **2025-10-10** onwards; requests for earlier dates return HTTP 204.
 - Download requests to `copilot-reports.github.com` **MUST NOT** include an `Authorization` header — the URLs are pre-authenticated; sending auth headers may cause request failures.
 - The metrics API returns a `{"download_links": [...], "report_day": "YYYY-MM-DD"}` envelope; the connector downloads each URL in `download_links` as NDJSON (one JSON object per line).
 - The old `/orgs/{org}/copilot/metrics` endpoint was decommissioned on 2026-04-02 and **MUST NOT** be used. This connector references only the replacement reports API endpoints.
@@ -171,7 +174,7 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 - Incremental sync for metrics streams (`copilot_user_metrics`, `copilot_org_metrics`) using `day` cursor
 - Full refresh for seat roster (`copilot_seats`)
 - Two-step metrics fetch: envelope request to GitHub API → NDJSON download from signed URL
-- Identity resolution via `copilot_user_metrics.login` → `user_email` through Silver join with `copilot_seats.user_login`
+- Identity resolution via `copilot_user_metrics.user_login` → `user_email` through Silver join with `copilot_seats.user_login`
 - Bronze-layer table schemas for all 3 data streams
 - Silver staging model `copilot__ai_dev_usage` → `class_ai_dev_usage`
 - Silver staging model `copilot__ai_org_usage` (deferred — `class_ai_org_usage` Silver view does not yet exist; model tagged for future activation)
@@ -196,7 +199,7 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-ghcopilot-seats-collect`
 
-The connector **MUST** extract all current Copilot seat assignments from `GET /orgs/{org}/copilot/billing/seats`, capturing each seat's `user_login`, `user_email`, `plan_type`, `pending_cancellation_date`, `last_activity_at`, `last_activity_editor`, `created_at`, and `updated_at`.
+The connector **MUST** extract all current Copilot seat assignments from `GET /orgs/{org}/copilot/billing/seats`, capturing each seat's `user_login`, `user_email`, `plan_type`, `pending_cancellation_date`, `last_activity_at`, `last_activity_editor`, `last_authenticated_at`, `created_at`, and `updated_at`.
 
 **Rationale**: The seat roster enables utilization reporting and is the canonical source of `user_email` — the identity key for cross-system resolution. `copilot_user_metrics` uses GitHub login as the identifier; mapping to email requires joining with this stream.
 
@@ -218,7 +221,7 @@ The connector **MUST** paginate through all seat pages using `page` and `per_pag
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-ghcopilot-user-metrics-collect`
 
-The connector **MUST** extract per-user daily Copilot usage for each day since `github_start_date` from the user metrics reports endpoint. For each user row in the NDJSON payload, it **MUST** capture: `login`, `day`, `loc_added_sum`, `code_acceptance_activity_count`, `user_initiated_interaction_count`, `used_chat`, `used_agent`, and `used_cli`.
+The connector **MUST** extract per-user daily Copilot usage for each day since `github_start_date` from the user metrics reports endpoint. For each user row in the NDJSON payload, it **MUST** capture: `user_login`, `day`, `loc_added_sum`, `code_acceptance_activity_count`, `user_initiated_interaction_count`, `used_chat`, `used_agent`, and `used_cli`.
 
 **Rationale**: Per-user daily metrics are the primary signal for `class_ai_dev_usage` — enabling acceptance rate, lines-added, and feature engagement analytics alongside Cursor and Claude Code for cross-tool AI adoption analysis.
 
@@ -291,7 +294,7 @@ The connector **MUST** produce a collection-run log entry for each execution, re
 Each stream **MUST** use a primary key to ensure that re-running the connector for an overlapping date range does not produce duplicate records:
 
 - `copilot_seats`: key = `user_login` (one active seat per GitHub user, scoped per Airbyte connection)
-- `copilot_user_metrics`: key = `unique` (composite: `day|login`, scoped per Airbyte connection)
+- `copilot_user_metrics`: key = `unique` (composite: `day|user_login`, scoped per Airbyte connection)
 - `copilot_org_metrics`: key = `unique` (composite: `insight_source_id|day` — `insight_source_id` discriminates between multiple org connections within the same tenant)
 
 **Rationale**: Incremental sync may revisit dates already fetched. Primary keys ensure idempotent extraction and prevent duplicate rows in the Bronze layer.
@@ -314,7 +317,7 @@ Every Bronze row **MUST** carry `tenant_id` (from connector configuration), `ins
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-ghcopilot-identity-key`
 
-The `copilot_seats` stream **MUST** include `user_email` as the primary identity field and `user_login` as the GitHub username. The `copilot_user_metrics` stream **MUST** include `login`, which the Silver staging model joins with `copilot_seats.user_login` to obtain `user_email`. These fields are used by the Identity Manager to resolve users to canonical `person_id` values in Silver step 2.
+The `copilot_seats` stream **MUST** include `user_email` as the primary identity field and `user_login` as the GitHub username. The `copilot_user_metrics` stream **MUST** include `user_login` (source-native field name from the NDJSON payload), which the Silver staging model joins with `copilot_seats.user_login` to obtain `user_email`. These fields are used by the Identity Manager to resolve users to canonical `person_id` values in Silver step 2.
 
 **Rationale**: Email is the stable cross-platform identity key shared across GitHub Copilot, Cursor, Claude Code, HR systems, and version control. GitHub login alone is insufficient for cross-system resolution.
 
@@ -338,7 +341,7 @@ The Silver staging model **MUST** use `user_email` (resolved from `copilot_seats
 
 - [ ] `p1` - **ID**: `cpt-insightspec-nfr-ghcopilot-auth`
 
-The connector **MUST** authenticate to `api.github.com` using `Authorization: Bearer {token}` with a PAT (classic) that has `manage_billing:copilot` scope. Download requests to `copilot-reports.github.com` **MUST NOT** include the `Authorization` header.
+The connector **MUST** authenticate to `api.github.com` using `Authorization: Bearer {token}` with a PAT (classic) that has `manage_billing:copilot` and `read:org` scopes. Download requests to `copilot-reports.github.com` **MUST NOT** include the `Authorization` header.
 
 #### Rate Limit Compliance
 
@@ -362,7 +365,7 @@ All rows written by this connector **MUST** carry `data_source = 'insight_github
 
 - [ ] `p1` - **ID**: `cpt-insightspec-nfr-ghcopilot-idempotent`
 
-Repeated collection of the same date range **MUST NOT** create duplicate rows. The connector **MUST** use upsert semantics keyed on `user_login` (seats), composite `day|login` (user metrics), or composite `insight_source_id|day` (org metrics).
+Repeated collection of the same date range **MUST NOT** create duplicate rows. The connector **MUST** use upsert semantics keyed on `user_login` (seats), composite `day|user_login` (user metrics), or composite `insight_source_id|day` (org metrics).
 
 #### Schema Stability
 
@@ -391,7 +394,7 @@ Bronze table schemas **MUST** remain stable across connector versions. Additive 
 
 **Stability**: stable
 
-**Description**: Three Bronze streams with defined schemas — `copilot_seats`, `copilot_user_metrics`, `copilot_org_metrics`. Identity keys: `copilot_seats.user_email` (primary), `copilot_user_metrics.login` resolved to `user_email` via Silver join with `copilot_seats.user_login`. Incremental streams use `day` cursor.
+**Description**: Three Bronze streams with defined schemas — `copilot_seats`, `copilot_user_metrics`, `copilot_org_metrics`. Identity keys: `copilot_seats.user_email` (primary), `copilot_user_metrics.user_login` resolved to `user_email` via Silver join with `copilot_seats.user_login`. Incremental streams use `day` cursor.
 
 **Breaking Change Policy**: Adding new fields is non-breaking. Removing or renaming fields requires a migration. Bronze namespace and stream names are stable (`bronze_github_copilot.copilot_*`).
 
@@ -436,7 +439,7 @@ Bronze table schemas **MUST** remain stable across connector versions. Additive 
 **Preconditions**:
 
 - GitHub organization has Copilot for Business or Enterprise enabled.
-- An Organization Owner has created a PAT (classic) with `manage_billing:copilot` scope at github.com → Settings → Developer settings → Personal access tokens → Tokens (classic).
+- An Organization Owner has created a PAT (classic) with `manage_billing:copilot` and `read:org` scopes at github.com → Settings → Developer settings → Personal access tokens → Tokens (classic).
 
 **Main Flow**:
 

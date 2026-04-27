@@ -1,6 +1,6 @@
 # GitHub Copilot Connector
 
-Extracts seat assignments and per-user daily usage metrics from the GitHub REST API using a Personal Access Token with `manage_billing:copilot` scope.
+Extracts seat assignments and per-user daily usage metrics from the GitHub REST API using a Personal Access Token with `manage_billing:copilot` and `read:org` scopes.
 
 The connector covers:
 - **Seat roster** — who holds a Copilot seat, plan type, last activity timestamp, and primary editor
@@ -16,7 +16,7 @@ The connector covers:
 
 1. Organization must have GitHub Copilot for Business or Enterprise enabled.
 2. An Organization Owner creates a Personal Access Token (classic) at github.com → Settings → Developer settings → Personal access tokens → Tokens (classic).
-3. The token must have `manage_billing:copilot` scope. Only Organization Owners can create tokens with this scope; fine-grained PATs do not support it.
+3. The token must have `manage_billing:copilot` and `read:org` scopes. `manage_billing:copilot` covers the seats endpoint; `read:org` is additionally required for the metrics reports endpoints. Only Organization Owners can create tokens with these scopes; fine-grained PATs do not support them.
 4. The metrics streams use a two-step HTTP pattern: the connector first fetches a signed download URL from `api.github.com`, then downloads NDJSON from `copilot-reports.github.com` without an `Authorization` header.
 
 > **Note**: The old `/orgs/{org}/copilot/metrics` endpoint was decommissioned on 2026-04-02 and MUST NOT be used. This connector targets the replacement reports API (`/orgs/{org}/copilot/metrics/reports/*`).
@@ -45,7 +45,7 @@ stringData:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `github_token` | Yes | Personal Access Token (classic) with `manage_billing:copilot` scope. Marked `airbyte_secret: true` — never logged. |
+| `github_token` | Yes | Personal Access Token (classic) with `manage_billing:copilot` and `read:org` scopes. Marked `airbyte_secret: true` — never logged. |
 | `github_org` | Yes | GitHub organization slug (e.g. `my-company`). |
 | `github_start_date` | No | Earliest date to collect user and org metrics from (YYYY-MM-DD). Default: 90 days ago. |
 
@@ -90,13 +90,13 @@ For each day requested, the metrics streams:
 ### Identity Keys
 
 - `copilot_seats.user_email` — primary identity key (one row per seat; work email from linked GitHub account)
-- `copilot_user_metrics.login` — secondary identity key (GitHub username); resolved to `user_email` by joining with `copilot_seats.user_login` in the Silver staging model
+- `copilot_user_metrics.user_login` — secondary identity key (GitHub username, source-native field); resolved to `user_email` by joining with `copilot_seats.user_login` in the Silver staging model
 
 ## Silver Targets
 
 Two Silver staging models are defined for this connector and run under the `tag:github-copilot` dbt selector:
 
-- `copilot__ai_dev_usage` — feeds `class_ai_dev_usage` (per-user daily code acceptance, lines added, feature engagement alongside Cursor/Claude Code/Windsurf). Source: `copilot_user_metrics` joined with `copilot_seats` to resolve `login` → `user_email`.
+- `copilot__ai_dev_usage` — feeds `class_ai_dev_usage` (per-user daily code acceptance, lines added, feature engagement alongside Cursor/Claude Code/Windsurf). Source: `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email`.
 - `copilot__ai_org_usage` — feeds `class_ai_org_usage` (org-level daily aggregates). Source: `copilot_org_metrics`. **Deferred** — `class_ai_org_usage` Silver view does not yet exist; model is tagged `silver:class_ai_org_usage` for future activation.
 
 Silver-level `silver:class_*` tags will be added in a separate PR alongside the Silver framework changes.
@@ -107,7 +107,8 @@ Silver-level `silver:class_*` tags will be added in a separate PR alongside the 
 - **Signed URLs expire**: the connector must download NDJSON immediately after receiving the signed URL envelope; URLs are not cached across runs.
 - **No auth header on download**: the download request to `copilot-reports.github.com` **MUST NOT** include the `Authorization` header.
 - **Copilot policy gating**: if the organization has disabled Copilot for specific teams or users, they do not appear in `copilot_user_metrics`. The seat roster remains complete.
-- **Login→email mapping**: `copilot_user_metrics.login` is a GitHub username, not an email. Email is resolved in the Silver model via join with `copilot_seats`. If a user appears in metrics but not in seats (transient race condition), `user_email` is NULL; the row is retained in Bronze but excluded from Silver identity resolution.
+- **HTTP 204 on no data**: the metrics reports API returns HTTP 204 when no data exists for the requested day (e.g., before 2025-10-10 or future dates). The connector treats 204 as a valid empty response — 0 records emitted, cursor advances.
+- **Login→email mapping**: `copilot_user_metrics.user_login` is a GitHub username, not an email. Email is resolved in the Silver model via join with `copilot_seats`. If a user appears in metrics but not in seats (transient race condition), `user_email` is NULL; the row is retained in Bronze but excluded from Silver identity resolution.
 
 ## Validation
 

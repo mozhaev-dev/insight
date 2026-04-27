@@ -45,7 +45,7 @@ One `AbstractSource` (`SourceGitHubCopilot`) exposes three streams:
 
 Two dbt Silver models are defined alongside the connector:
 
-- `copilot__ai_dev_usage` — Bronze `copilot_user_metrics` joined with `copilot_seats` to resolve `login` → `user_email` → `class_ai_dev_usage`
+- `copilot__ai_dev_usage` — Bronze `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email` → `class_ai_dev_usage`
 - `copilot__ai_org_usage` — Bronze `copilot_org_metrics` → `class_ai_org_usage` (**deferred** — Silver view does not yet exist; model tagged for future activation)
 
 #### System Context
@@ -86,9 +86,9 @@ graph LR
 | `cpt-insightspec-fr-ghcopilot-org-metrics-collect` | Stream `copilot_org_metrics` → `GET /orgs/{org}/copilot/metrics/reports/organization-1-day?day=YYYY-MM-DD` → signed URL → NDJSON |
 | `cpt-insightspec-fr-ghcopilot-org-metrics-incremental` | Same `DatetimeBasedCursor` pattern as user metrics |
 | `cpt-insightspec-fr-ghcopilot-collection-runs` | **Deferred to Phase 2** — monitoring table produced by Argo orchestrator |
-| `cpt-insightspec-fr-ghcopilot-deduplication` | Primary keys: `user_login` (seats), composite `unique` (`day\|login` for user metrics, `insight_source_id\|day` for org metrics) |
+| `cpt-insightspec-fr-ghcopilot-deduplication` | Primary keys: `user_login` (seats), composite `unique` (`day\|user_login` for user metrics, `insight_source_id\|day` for org metrics) |
 | `cpt-insightspec-fr-ghcopilot-tenant-tagging` | `inject_tenant_fields()` applied in each stream's `parse_response()` — injects `tenant_id`, `insight_source_id`, `collected_at`, `data_source = 'insight_github_copilot'` |
-| `cpt-insightspec-fr-ghcopilot-identity-key` | `copilot_seats.user_email` primary identity key; `copilot_user_metrics.login` resolved to email via Silver join |
+| `cpt-insightspec-fr-ghcopilot-identity-key` | `copilot_seats.user_email` primary identity key; `copilot_user_metrics.user_login` resolved to email via Silver join |
 | `cpt-insightspec-fr-ghcopilot-identity-email-only` | Silver model uses only `user_email` for cross-system resolution; GitHub numeric IDs retained in Bronze only |
 
 #### NFR Allocation
@@ -154,7 +154,7 @@ The two-step signed URL pattern is encapsulated in a shared `_fetch_ndjson_recor
 
 - [ ] `p1` - **ID**: `cpt-insightspec-constraint-ghcopilot-pat-classic`
 
-Only a GitHub Personal Access Token (classic) with `manage_billing:copilot` scope is supported. Only Organization Owners can create such tokens. Fine-grained PATs do not support this scope. The connector does not support GitHub App authentication for the Copilot Admin API.
+Only a GitHub Personal Access Token (classic) with `manage_billing:copilot` **and `read:org`** scopes is supported. `manage_billing:copilot` is required for the seats endpoint (`/copilot/billing/seats`); `read:org` is additionally required for the metrics reports endpoints (`/copilot/metrics/reports/*`). Only Organization Owners can create such tokens. Fine-grained PATs do not support these scopes. The connector does not support GitHub App authentication for the Copilot Admin API.
 
 #### No Authorization Header on Signed-URL Download
 
@@ -191,12 +191,12 @@ All three GitHub API endpoint calls use HTTP GET with query parameters. There ar
 | Entity | Description | Maps To |
 |--------|-------------|---------|
 | `SeatAssignment` | One assigned Copilot seat for a GitHub user. Key: `user_login`. | `copilot_seats` |
-| `UserDailyMetrics` | Per-user daily code acceptance and feature engagement. Key: composite `day\|login`. | `copilot_user_metrics` |
+| `UserDailyMetrics` | Per-user daily code acceptance and feature engagement. Key: composite `day\|user_login`. | `copilot_user_metrics` |
 | `OrgDailyMetrics` | Org-level daily aggregates across all users. Key: composite `insight_source_id\|day`. | `copilot_org_metrics` |
 
 **Relationships**:
 
-- `SeatAssignment.user_login` → `UserDailyMetrics.login` — Silver join that resolves login to `user_email`
+- `SeatAssignment.user_login` → `UserDailyMetrics.user_login` — Silver join that resolves `user_login` to `user_email`
 - `SeatAssignment.user_email` → `person_id` via Identity Manager (Silver step 2)
 - `OrgDailyMetrics` has no direct user attribution — org-wide aggregate only
 
@@ -306,6 +306,7 @@ Extracts the full seat roster (all active and pending Copilot seat assignments).
 - Pagination: offset-style — `page` (starts at 1) + `per_page=100`; stops when the API returns fewer than 100 items.
 - Auth: `Authorization: Bearer {token}` via `rest_headers()`.
 - Injects framework fields via `inject_tenant_fields()`.
+- Field extraction: `user_login` and `user_email` are mapped from `assignee.login` and `assignee.email` in the API response — the seats endpoint nests identity fields under the `assignee` sub-object, not at the top level.
 - Primary key: `user_login`.
 
 ##### Responsibility boundaries
@@ -330,11 +331,11 @@ Extracts per-user daily Copilot usage metrics — the primary input for `class_a
 - Step 1 response: `{"download_links": [...], "report_day": "YYYY-MM-DD"}`.
 - Step 2: For each URL in `download_links`, `GET {signed_url}` via `download_headers()` (no auth header). Parse each line as a JSON object — one record per line.
 - Sync mode: Incremental; cursor field `day` (YYYY-MM-DD); advances from `max(day)` to yesterday UTC.
-- Injects framework fields and composite `unique` key (`{day}|{login}`) per record.
+- Injects framework fields and composite `unique` key (`{day}|{user_login}`) per record.
 
 ##### Responsibility boundaries
 
-Does NOT resolve `login` to `user_email` — owned by the Silver dbt model. Does NOT cache signed URLs across retry attempts.
+Does NOT resolve `user_login` to `user_email` — owned by the Silver dbt model. Does NOT cache signed URLs across retry attempts.
 
 ##### Related components (by ID)
 
@@ -388,7 +389,7 @@ Reads from `copilot_user_metrics`; LEFT JOINs `copilot_seats` on `copilot_user_m
 - **New dbt Silver model**: add a `.sql` file to `dbt/`, tag it `tag:github-copilot` to include it in the platform `dbt_select`.
 
 **Stability zones**:
-- **Stable (external contract)**: Bronze namespace `bronze_github_copilot`, stream names (`copilot_*`), `copilot_seats.user_email`, `copilot_user_metrics.login`, `inject_tenant_fields()` signature.
+- **Stable (external contract)**: Bronze namespace `bronze_github_copilot`, stream names (`copilot_*`), `copilot_seats.user_email`, `copilot_user_metrics.user_login`, `inject_tenant_fields()` signature.
 - **Internal (may change without notice)**: `_fetch_ndjson_records()` helper implementation, `auth.py` function signatures.
 
 ### 3.3 API Contracts
@@ -437,7 +438,7 @@ Config fields (defined in `spec.json`):
 | Field | Required | Secret | Description |
 |-------|----------|--------|-------------|
 | `tenant_id` | Yes | No | Tenant isolation identifier (UUID) |
-| `github_token` | Yes | Yes | PAT (classic) with `manage_billing:copilot` scope |
+| `github_token` | Yes | Yes | PAT (classic) with `manage_billing:copilot` and `read:org` scopes |
 | `github_org` | Yes | No | GitHub organization slug (e.g. `my-company`) |
 | `insight_source_id` | No | No | Connector instance identifier — default `''` |
 | `github_start_date` | No | No | Earliest date for metrics backfill (YYYY-MM-DD). Default: 90 days ago |
@@ -505,21 +506,31 @@ sequenceDiagram
     Note over Src,Reports: Streams 2-3: user_metrics and org_metrics (incremental, P1D)
     loop For each day D (cursor → yesterday UTC)
         Src->>GHApi: GET /metrics/reports/users-1-day?day={D} [Bearer auth]
-        GHApi-->>Src: {download_links: [...], report_day: D}
-        loop For each signed URL in download_links
-            Src->>Reports: GET {signed_url} [no Authorization header]
-            Reports-->>Src: NDJSON payload
-            Src->>Src: parse line-by-line → emit RECORD per line
+        alt HTTP 204 (No Data for Day)
+            GHApi-->>Src: 204 No Content
+            Src->>Src: skip day — emit 0 records, advance cursor to D+1
+        else HTTP 200
+            GHApi-->>Src: {download_links: [...], report_day: D}
+            loop For each signed URL in download_links
+                Src->>Reports: GET {signed_url} [no Authorization header]
+                Reports-->>Src: NDJSON payload
+                Src->>Src: parse line-by-line → emit RECORD per line
+            end
+            Src-->>Dest: RECORD messages (user_metrics with unique key + framework fields)
         end
-        Src-->>Dest: RECORD messages (user_metrics with unique key + framework fields)
 
         Src->>GHApi: GET /metrics/reports/organization-1-day?day={D} [Bearer auth]
-        GHApi-->>Src: {download_links: [...], report_day: D}
-        loop For each signed URL in download_links
-            Src->>Reports: GET {signed_url} [no Authorization header]
-            Reports-->>Src: NDJSON payload
+        alt HTTP 204 (No Data for Day)
+            GHApi-->>Src: 204 No Content
+            Src->>Src: skip day — emit 0 records, advance cursor to D+1
+        else HTTP 200
+            GHApi-->>Src: {download_links: [...], report_day: D}
+            loop For each signed URL in download_links
+                Src->>Reports: GET {signed_url} [no Authorization header]
+                Reports-->>Src: NDJSON payload
+            end
+            Src-->>Dest: RECORD messages (org_metrics with unique key + framework fields)
         end
-        Src-->>Dest: RECORD messages (org_metrics with unique key + framework fields)
     end
 
     Src-->>Dest: STATE messages (updated day cursor per incremental stream)
@@ -561,12 +572,13 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
 | `user_login` | String | GitHub username of the seat holder — primary key |
 | `user_email` | String | Work email from linked GitHub account — primary identity key → `person_id` |
-| `plan_type` | String | `business` / `enterprise` |
+| `plan_type` | String | `business` / `enterprise` / `unknown` |
 | `pending_cancellation_date` | String (nullable) | Cancellation date (ISO 8601), NULL if not cancelling |
 | `last_activity_at` | String (nullable) | Last recorded Copilot activity (ISO 8601) |
 | `last_activity_editor` | String (nullable) | Editor used in last activity (e.g. `vscode`, `jetbrains`) |
+| `last_authenticated_at` | String (nullable) | Timestamp of last GitHub Copilot authentication (ISO 8601) |
 | `created_at` | String (nullable) | When the seat was assigned (ISO 8601) |
-| `updated_at` | String (nullable) | Last seat record update (ISO 8601) |
+| `updated_at` | String (nullable) | Last seat record update (ISO 8601) — **deprecated by GitHub** |
 | `collected_at` | String | Collection timestamp (UTC ISO 8601) — framework-injected |
 | `data_source` | String | Always `insight_github_copilot` — framework-injected |
 
@@ -584,8 +596,8 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 |-------|------|-------------|
 | `tenant_id` | String | Tenant isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Composite key: `{day}\|{login}` |
-| `login` | String | GitHub username — joins to `copilot_seats.user_login` for email resolution |
+| `unique` | String | Composite key: `{day}\|{user_login}` |
+| `user_login` | String | GitHub username (source-native: API field `user_login`) — joins to `copilot_seats.user_login` for email resolution |
 | `day` | String | Metric date (YYYY-MM-DD) — incremental cursor |
 | `loc_added_sum` | Number (nullable) | Lines of code added via Copilot suggestions |
 | `code_acceptance_activity_count` | Number (nullable) | Number of accepted code completion suggestions |
@@ -596,9 +608,9 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | `collected_at` | String | Collection timestamp (UTC ISO 8601) — framework-injected |
 | `data_source` | String | Always `insight_github_copilot` — framework-injected |
 
-**PK**: `unique`. Granularity: one row per `(day, login)`. Incremental.
+**PK**: `unique`. Granularity: one row per `(day, user_login)`. Incremental.
 
-**Query patterns**: Silver model reads by `login` for identity join; incremental loads filter by `day`. _ClickHouse sorting key recommendation: `(tenant_id, day, login)`._
+**Query patterns**: Silver model reads by `user_login` for identity join; incremental loads filter by `day`. _ClickHouse sorting key recommendation: `(tenant_id, day, user_login)`._
 
 ---
 
@@ -612,15 +624,17 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
 | `unique` | String | Composite key: `{insight_source_id}\|{day}` — `insight_source_id` discriminates between multiple org connections per tenant |
 | `day` | String | Metric date (YYYY-MM-DD) — incremental cursor |
-| `total_code_acceptance_activity_count` | Number (nullable) | Total accepted code suggestions across all users |
-| `total_loc_added_sum` | Number (nullable) | Total lines of AI-generated code added across all users |
-| `total_active_user_count` | Number (nullable) | Users with at least one Copilot interaction on this day |
-| `total_engaged_user_count` | Number (nullable) | Users with substantive engagement (threshold defined by GitHub) |
-| `total_used_chat_count` | Number (nullable) | Users who used Copilot Chat on this day |
-| `total_used_agent_count` | Number (nullable) | Users who used agent mode on this day |
-| `total_used_cli_count` | Number (nullable) | Users who used Copilot CLI on this day |
+| `total_code_acceptance_activity_count` | Number (nullable) | Total accepted code suggestions across all users — **provisional** |
+| `total_loc_added_sum` | Number (nullable) | Total lines of AI-generated code added across all users — **provisional** |
+| `total_active_user_count` | Number (nullable) | Users with at least one Copilot interaction on this day — **provisional** |
+| `total_engaged_user_count` | Number (nullable) | Users with substantive engagement (threshold defined by GitHub) — **provisional** |
+| `total_used_chat_count` | Number (nullable) | Users who used Copilot Chat on this day — **provisional** |
+| `total_used_agent_count` | Number (nullable) | Users who used agent mode on this day — **provisional** |
+| `total_used_cli_count` | Number (nullable) | Users who used Copilot CLI on this day — **provisional** |
 | `collected_at` | String | Collection timestamp (UTC ISO 8601) — framework-injected |
 | `data_source` | String | Always `insight_github_copilot` — framework-injected |
+
+> **Provisional**: Org-level metric field names are inferred from GitHub API documentation; the live reports endpoint may use different naming conventions. JSON Schema must include `additionalProperties: true` to passthrough unexpected fields. Confirm exact field names against live API before Silver model activation.
 
 **PK**: `unique`. Granularity: one row per `(insight_source_id, day)`. Incremental.
 
@@ -670,7 +684,7 @@ Connection: github-copilot-{org_name}-daily
 
 ### Identity Resolution Strategy
 
-`copilot_seats.user_email` is the sole cross-system identity key emitted by this connector. `copilot_user_metrics.login` is a GitHub username — not an email — and is resolved to `user_email` exclusively through the Silver join in `copilot__ai_dev_usage.sql`.
+`copilot_seats.user_email` is the sole cross-system identity key emitted by this connector. `copilot_user_metrics.user_login` is a GitHub username — not an email — and is resolved to `user_email` exclusively through the Silver join in `copilot__ai_dev_usage.sql`.
 
 **Login-to-email resolution gap**: If a user appears in `copilot_user_metrics` but not in `copilot_seats` (transient race condition when seat roster sync and metrics sync occur close together), `user_email` will be NULL for those rows in Silver. These rows are retained in Bronze but excluded from Silver identity resolution. The gap resolves automatically on the next seat roster sync.
 
@@ -684,8 +698,8 @@ Connection: github-copilot-{org_name}-daily
 |--------------------------------------------------|-------------------------------|---------------|
 | `tenant_id`, `insight_source_id` | Pass through | — |
 | `day` | `report_date` | Rename |
-| `copilot_seats.user_email` | `email` | LEFT JOIN on `login = user_login` |
-| `login` | `login` | Retained as secondary identifier |
+| `copilot_seats.user_email` | `email` | LEFT JOIN on `user_login = user_login` |
+| `user_login` | `user_login` | Retained as secondary identifier |
 | `loc_added_sum` | `lines_added` | Rename |
 | `code_acceptance_activity_count` | `code_acceptances` | Rename |
 | `user_initiated_interaction_count` | `interactions` | Rename |
@@ -732,6 +746,8 @@ Connection: github-copilot-{org_name}-daily
 
 All incremental streams use `step: P1D` — one API call per day. The Copilot reports API does not support multi-day range parameters. On subsequent runs, the cursor resumes from the last stored `day`. Data for day `D` is available from the reports API approximately 24h after end-of-day `D` UTC; the 48h freshness budget (`cpt-insightspec-nfr-ghcopilot-freshness`) provides adequate headroom.
 
+**Data availability**: The Copilot reports API only has data from **2025-10-10** onwards; requests for earlier dates return HTTP 204 (no content), which the connector treats as a skip (0 records, cursor advances). The default `github_start_date` of 90 days ago is safe once the connector is configured after 2026-01-08.
+
 ### Capacity Estimates
 
 Expected data volumes for typical deployments:
@@ -752,7 +768,7 @@ A full daily incremental sync for a 200-person team (catching up 1 day) takes ap
 |--------|--------|
 | **DATA (Data Architecture)** | Bronze table schemas and primary keys are defined in §3.7. Data partitioning, replication, and archival are managed by the destination operator (ClickHouse / PostgreSQL configuration) — outside connector scope. Data lineage is captured in §4 Silver/Gold Mappings. Data ownership: the destination operator is the data controller; this connector acts as a data processor on their behalf. Data quality monitoring is delegated to the destination operator. |
 | **PERF (Performance)** | Batch data pipeline; one API call per stream per day. Rate-limit handling is the only performance concern and is addressed in NFR `cpt-insightspec-nfr-ghcopilot-rate-limiting`. |
-| **SEC (Security)** | No user-facing surface; no data mutation. Minimal threat model: (1) PAT stored as `airbyte_secret: true` — never logged; rotated via K8s Secret; (2) all data in transit is HTTPS (`api.github.com` and `copilot-reports.github.com`); (3) `manage_billing:copilot` scope is read-only — no write operations possible; (4) signed URLs are short-lived and GitHub-generated; the connector assumes GitHub API integrity and issues no additional domain verification. |
+| **SEC (Security)** | No user-facing surface; no data mutation. Minimal threat model: (1) PAT stored as `airbyte_secret: true` — never logged; rotated via K8s Secret; (2) all data in transit is HTTPS (`api.github.com` and `copilot-reports.github.com`); (3) `manage_billing:copilot` and `read:org` scopes are read-only — no write operations possible; (4) signed URLs are short-lived and GitHub-generated; the connector assumes GitHub API integrity and issues no additional domain verification. |
 | **SAFE (Safety)** | Pure data-extraction pipeline with no interaction with physical systems. |
 | **REL (Reliability)** | Idempotent extraction via deduplication keys; retry logic addresses transient GitHub API failures. Framework-managed state and scheduling. |
 | **UX (Usability)** | No user-facing interface; configuration is a K8s Secret and Airbyte connection form. |
