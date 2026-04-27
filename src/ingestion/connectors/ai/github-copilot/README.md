@@ -49,7 +49,7 @@ stringData:
 | `github_org` | Yes | GitHub organization slug (e.g. `my-company`). |
 | `github_start_date` | No | Earliest date to collect user and org metrics from (YYYY-MM-DD). Default: 90 days ago. |
 
-> `insight_source_id` is **not** a `stringData` field — it is injected from the `insight.cyberfabric.com/source-id` annotation on the Secret. Setting it in `stringData` has no effect.
+> `insight_source_id` is **not** a `stringData` field — it is injected from the `insight.cyberfabric.com/source-id` annotation on the Secret. Setting it in `stringData` has no effect. The annotation **MUST** be set to a non-empty, distinct value per Copilot connection within a tenant; `check_connection()` rejects an empty `insight_source_id` to prevent silent dedup collision in `copilot_org_metrics` (composite key `{insight_source_id}|{day}`).
 
 ### Automatically injected
 

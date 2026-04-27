@@ -276,7 +276,7 @@ Entry point for the Airbyte connector. Validates credentials, returns the stream
 
 ##### Responsibility scope
 
-- `check_connection()`: fetches the first page of `GET /orgs/{org}/copilot/billing/seats` to validate the PAT and org slug. Returns `(True, None)` on 200; surfaces authentication errors on 401/403 and Copilot-not-enabled signals on 404.
+- `check_connection()`: (a) validates that `insight_source_id` is non-empty and returns `(False, "insight_source_id MUST be set via the insight.cyberfabric.com/source-id annotation; empty values cause silent dedup collision in copilot_org_metrics")` if it is blank; (b) fetches the first page of `GET /orgs/{org}/copilot/billing/seats` to validate the PAT and org slug. Returns `(True, None)` on 200; surfaces authentication errors on 401/403 and Copilot-not-enabled signals on 404.
 - `streams()`: returns `[CopilotSeatsStream, CopilotUserMetricsStream, CopilotOrgMetricsStream]`.
 - `spec()`: reads `spec.json` and returns `ConnectorSpecification`.
 
@@ -376,11 +376,15 @@ Two SQL transformations that route the connector's Bronze streams to cross-provi
 
 ##### `copilot__ai_dev_usage.sql`
 
-Reads from `copilot_user_metrics`; LEFT JOINs `copilot_seats` on `copilot_user_metrics.login = copilot_seats.user_login` to obtain `user_email`. Sets `data_source = 'insight_github_copilot'`, `provider = 'github'`, `client = 'copilot'`. `person_id` is NULL at Silver step 1; resolved in step 2 via Identity Manager. Rows where `login` has no matching seat (transient race condition) retain `user_email = NULL` and are excluded from identity resolution. Materialization: `incremental`, unique key: `unique_id`.
+Reads from `copilot_user_metrics`; LEFT JOINs `copilot_seats` on `copilot_user_metrics.user_login = copilot_seats.user_login` to obtain `user_email`. Sets `data_source = 'insight_github_copilot'`, `provider = 'github'`, `client = 'copilot'`. `person_id` is NULL at Silver step 1; resolved in step 2 via Identity Manager. Materialization: `incremental`, unique key: `unique_id`.
+
+**NULL `user_email` policy**: The dbt model **MUST** filter `WHERE user_email IS NOT NULL` before writing to `class_ai_dev_usage`, since the Cursor and Windsurf staging models contributing to the same Silver view assume a non-null `email` column. Rows where `user_login` has no matching seat (transient race condition — seat removed between seat fetch and metrics fetch) are dropped from Silver but retained in Bronze (`copilot_user_metrics`). Bronze rows recover automatically on the next seat roster sync once the user re-appears in `copilot_seats`. Tracked in PRD OQ-COP-1.
 
 ##### `copilot__ai_org_usage.sql`
 
 **Status: DEFERRED** — `class_ai_org_usage` Silver view does not yet exist. The model file is present and tagged `tag:github-copilot`, `tag:silver:class_ai_org_usage`, but includes `{{ config(enabled=false) }}` in its config block to prevent execution despite being matched by `dbt_select: tag:github-copilot+`. Will be activated (by removing `enabled=false`) in a separate PR alongside the `class_ai_org_usage` Silver view creation.
+
+**Tracking**: PRD OQ-COP-2 owns the `class_ai_org_usage` view-creation question. A dedicated GitHub issue **MUST** be filed under `cyberfabric/insight` referencing OQ-COP-2 before this model is activated; the issue link is to be added here once filed (target: Q3 2026 per PRD §13).
 
 #### Extension Points & Stability Zones
 
@@ -440,7 +444,7 @@ Config fields (defined in `spec.json`):
 | `tenant_id` | Yes | No | Tenant isolation identifier (UUID) |
 | `github_token` | Yes | Yes | PAT (classic) with `manage_billing:copilot` and `read:org` scopes |
 | `github_org` | Yes | No | GitHub organization slug (e.g. `my-company`) |
-| `insight_source_id` | No | No | Connector instance identifier — default `''` |
+| `insight_source_id` | **Yes** | No | Connector instance identifier — **must be non-empty** (validated by `check_connection()`); injected by the platform from the `insight.cyberfabric.com/source-id` annotation on the K8s Secret |
 | `github_start_date` | No | No | Earliest date for metrics backfill (YYYY-MM-DD). Default: 90 days ago |
 
 `github_token` is marked `airbyte_secret: true` and is never logged.
@@ -621,8 +625,8 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | Field | Type | Description |
 |-------|------|-------------|
 | `tenant_id` | String | Tenant isolation key — framework-injected |
-| `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Composite key: `{insight_source_id}\|{day}` — `insight_source_id` discriminates between multiple org connections per tenant |
+| `insight_source_id` | String | Connector instance identifier — framework-injected, **required non-empty** (validated by `check_connection()`) |
+| `unique` | String | Composite key: `{insight_source_id}\|{day}` — `insight_source_id` discriminates between multiple org connections per tenant; **MUST** be non-empty to prevent silent collision when multiple connections are configured for the same tenant |
 | `day` | String | Metric date (YYYY-MM-DD) — incremental cursor |
 | `total_code_acceptance_activity_count` | Number (nullable) | Total accepted code suggestions across all users — **provisional** |
 | `total_loc_added_sum` | Number (nullable) | Total lines of AI-generated code added across all users — **provisional** |
@@ -703,11 +707,13 @@ Connection: github-copilot-{org_name}-daily
 | `loc_added_sum` | `lines_added` | Rename |
 | `code_acceptance_activity_count` | `code_acceptances` | Rename |
 | `user_initiated_interaction_count` | `interactions` | Rename |
-| `used_chat`, `used_agent`, `used_cli` | `used_chat`, `used_agent`, `used_cli` | Pass through |
+| `used_chat`, `used_agent`, `used_cli` | `used_chat`, `used_agent`, `used_cli` | Pass through (Copilot-specific — see migration note below) |
 | — | `person_id` | NULL at Silver step 1; resolved in step 2 |
 | — | `provider` | `'github'` constant |
 | — | `client` | `'copilot'` constant |
 | `data_source` | `data_source` | `'insight_github_copilot'` |
+
+**`class_ai_dev_usage` schema alignment**: The unified Silver view `class_ai_dev_usage` is **not yet defined** in the codebase (per Cursor PRD OQ-CUR-1, claude-admin OQ-CADM-3). When the view is created, it **MUST** include `used_chat`, `used_agent`, `used_cli` as nullable Boolean columns — these are Copilot-specific signals not produced by the Cursor, Windsurf, or Claude Code staging models, which will leave them NULL. No retrofit migration of existing Cursor/Windsurf staging models is required, because the view does not yet exist; both the view definition and the three contributing staging models (`cursor`, `windsurf`, `copilot__ai_dev_usage`) **MUST** be activated together in a coordinated PR. This is captured by Cursor OQ-CUR-1 / claude-admin OQ-CADM-3.
 
 #### Org Metrics → `class_ai_org_usage` (deferred)
 

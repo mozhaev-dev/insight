@@ -500,6 +500,9 @@ Bronze table schemas **MUST** remain stable across connector versions. Additive 
 - Full-refresh stream (`copilot_seats`) correctly replaces stale seat roster data.
 - Download step issues GET requests to signed URLs **without** an `Authorization` header.
 - `check` succeeds against `copilot_seats` with a valid PAT; fails with HTTP 401 for an invalid token and HTTP 403 for an insufficiently scoped token.
+- `check` rejects a configuration with empty `insight_source_id` and returns a clear error message instructing the operator to set the `insight.cyberfabric.com/source-id` annotation.
+- HTTP 204 from the metrics reports endpoints is treated as a valid empty response: the connector emits zero records for that day, advances the cursor, and continues to the next day without raising an error.
+- Before activating `copilot__ai_org_usage` (deferred), org-level field names in the `copilot_org_metrics` Bronze schema are verified against a live call to `GET /orgs/{org}/copilot/metrics/reports/organization-1-day` and the schema is updated to match the live API field names. JSON Schema `additionalProperties: true` is set on `copilot_org_metrics` to passthrough unexpected fields during the verification window.
 
 ## 10. Dependencies
 
