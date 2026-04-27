@@ -94,10 +94,10 @@ For each day requested, the metrics streams:
 
 ## Silver Targets
 
-Two Silver staging models are defined for this connector and run under the `tag:github-copilot` dbt selector:
+Two Silver staging models are defined for this connector under the `tag:github-copilot` dbt selector:
 
-- `copilot__ai_dev_usage` — feeds `class_ai_dev_usage` (per-user daily code acceptance, lines added, feature engagement alongside Cursor/Claude Code/Windsurf). Source: `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email`.
-- `copilot__ai_org_usage` — feeds `class_ai_org_usage` (org-level daily aggregates). Source: `copilot_org_metrics`. **Deferred** — `class_ai_org_usage` Silver view does not yet exist; model is tagged `silver:class_ai_org_usage` for future activation.
+- `copilot__ai_dev_usage` — **active**. Feeds `class_ai_dev_usage` (per-user daily code acceptance, lines added, feature engagement alongside Cursor/Claude Code/Windsurf). Source: `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email`.
+- `copilot__ai_org_usage` — **deferred**. Tagged `tag:github-copilot` but includes `{{ config(enabled=false) }}`, so `dbt_select: tag:github-copilot+` does **not** execute it. Will be activated (by removing `enabled=false`) in a separate PR alongside the `class_ai_org_usage` Silver view creation.
 
 Silver-level `silver:class_*` tags will be added in a separate PR alongside the Silver framework changes.
 

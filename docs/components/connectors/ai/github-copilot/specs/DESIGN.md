@@ -140,7 +140,7 @@ Bronze tables preserve GitHub API field names without renaming. Boolean flags (`
 
 - [ ] `p2` - **ID**: `cpt-insightspec-principle-ghcopilot-email-identity`
 
-`copilot_seats.user_email` is the only field used for cross-system identity resolution. `copilot_user_metrics.login` is a GitHub username, not an email, and is resolved to `user_email` exclusively through the Silver join with `copilot_seats.user_login`. GitHub's numeric user IDs are not consumed downstream for person resolution.
+`copilot_seats.user_email` is the only field used for cross-system identity resolution. `copilot_user_metrics.user_login` is a GitHub username, not an email, and is resolved to `user_email` exclusively through the Silver join with `copilot_seats.user_login`. GitHub's numeric user IDs are not consumed downstream for person resolution.
 
 #### Two-Step Fetch Encapsulation
 

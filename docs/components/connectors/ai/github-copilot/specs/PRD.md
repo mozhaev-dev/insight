@@ -276,7 +276,6 @@ The connector **MUST** support incremental sync for org metrics using `day` as t
 - [ ] `p2` - **ID**: `cpt-insightspec-fr-ghcopilot-collection-runs`
 
 > **Phase 1 deferral**: The `copilot_collection_runs` stream is **not** emitted by the Airbyte connector in Phase 1. Operational monitoring is provided by the Argo orchestrator pipeline (one workflow run record per pipeline execution). Per-stream record counts and API call metrics are deferred to Phase 2, consistent with the `claude-enterprise`, `claude-admin`, and `confluence` connectors.
-
 > **[DEFERRED to Phase 2]** The following MUST obligation is a Phase 2 target; it does not apply in Phase 1.
 
 The connector **MUST** produce a collection-run log entry for each execution, recording `run_id`, `started_at`, `completed_at`, `status`, per-stream record counts, `api_calls`, `errors`, and `settings`.
@@ -468,7 +467,7 @@ Bronze table schemas **MUST** remain stable across connector versions. Additive 
 **Preconditions**:
 
 - At least one prior successful sync exists (or `github_start_date` configured for first run).
-- PAT is valid and has `manage_billing:copilot` scope.
+- PAT is valid and has `manage_billing:copilot` and `read:org` scopes.
 
 **Main Flow**:
 
