@@ -157,18 +157,29 @@ PYTHON
 # Main
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--all" ]]; then
-  # Find all connectors by descriptor.yaml (covers both nocode and CDK)
+  # Find all connectors by descriptor.yaml (covers both nocode and CDK).
+  # Continue on individual failures so one transient Airbyte API error or one
+  # bad descriptor doesn't block registration of the remaining connectors;
+  # exit non-zero at the end if any failed so CI / init.sh sees the error.
   found=0
+  errors=0
   while IFS= read -r -d '' desc; do
     connector_dir=$(dirname "$desc")
     connector="${connector_dir#${CONNECTORS_DIR}/}"
     echo "  Registering connector: $connector"
-    upload_connector "$connector"
+    if ! upload_connector "$connector"; then
+      echo "  ERROR: failed to register $connector (continuing...)" >&2
+      errors=$((errors + 1))
+    fi
     found=1
   done < <(find "$CONNECTORS_DIR" -name "descriptor.yaml" -print0 2>/dev/null)
   if [[ "$found" -eq 0 ]]; then
     echo "  No connectors found"
     exit 0
+  fi
+  if [[ "$errors" -gt 0 ]]; then
+    echo "  WARNING: $errors connector(s) failed to register" >&2
+    exit 1
   fi
 else
   upload_connector "${1:?Usage: $0 <connector_path> | --all}"
