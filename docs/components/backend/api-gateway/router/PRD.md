@@ -209,17 +209,19 @@ The per-route `timeout_ms` **MUST** be enforced on upstream connect, write, and 
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-router-header-rewrite`
 
-Before forwarding, the system **MUST**:
+Before forwarding, the system **MUST** strip headers in two categories and pass everything else through:
 
-- Remove any incoming `Authorization` header sent by the browser.
-- Set `Authorization: Bearer <gateway-jwt>`.
-- Set `X-Correlation-Id` (passing through if present, generating a UUID v7 if not).
-- Remove cookies whose names are reserved for the gateway (`__Host-sid`, CSRF cookie). Other cookies pass through unchanged.
-- Set `X-Forwarded-For` and `X-Forwarded-Proto` per RFC.
+**Hardcoded gateway-reserved (always stripped, then re-set by the gateway)**:
+- `Authorization` -- replaced with `Bearer <gateway-jwt>`.
+- `X-Correlation-Id` -- passed through if present, otherwise generated as UUID v7.
+- `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` -- set by the gateway per RFC.
+- Gateway-reserved cookies (`__Host-sid`, CSRF cookie) -- stripped from `Cookie` header.
+
+**Operator-configured (stripped only)**: any header name listed in `defaults.strip_request_headers` in the route ConfigMap. Reserved gateway header names **MUST NOT** appear in this list (validation rejects the config).
 
 Response headers **MUST** be passed through with no modification except for stripping any `Set-Cookie` that uses a reserved cookie name.
 
-**Rationale**: Browser-supplied `Authorization` headers must never reach internal services -- only the gateway's signed JWT does. Cookie scoping prevents accidental session leaks downstream.
+**Rationale**: Browser-supplied `Authorization` headers must never reach internal services -- only the gateway's signed JWT does. Operator-configurable strip list lets deployments harden header hygiene without code changes; security-critical strips stay hardcoded so a misconfig cannot expose them.
 
 **Actors**: `cpt-insightspec-actor-downstream-service`
 

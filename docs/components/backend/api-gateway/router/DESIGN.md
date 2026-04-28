@@ -25,8 +25,7 @@ date: 2026-04-28
   - [4.2 Failure Handling](#42-failure-handling)
   - [4.3 Observability](#43-observability)
 - [5. Design Decisions](#5-design-decisions)
-- [6. Open Questions](#6-open-questions)
-- [7. Traceability](#7-traceability)
+- [6. Traceability](#6-traceability)
 
 <!-- /toc -->
 
@@ -408,6 +407,12 @@ defaults:
   timeout_ms: 30000
   strip_prefix: false
   websocket: false
+  # Operator-extensible deny-list of request headers. The hardcoded
+  # gateway-reserved set (Authorization, X-Correlation-Id,
+  # X-Forwarded-*, gateway cookies) is always stripped in addition.
+  strip_request_headers:
+    - X-Real-IP
+    - Forwarded
 routes:
   - prefix: /api/v1/analytics
     upstream: http://analytics-api.insight.svc.cluster.local:8080
@@ -446,6 +451,7 @@ Validation rules (enforced on load and on every reload):
 - `upstream` must be a valid URL with hostname and port.
 - `timeout_ms ≥ 0`. `0` only allowed when `websocket: true`.
 - No two routes share an exact prefix.
+- `strip_request_headers` entries must be valid HTTP header names; reserved gateway headers (`Authorization`, `X-Correlation-Id`, `X-Forwarded-*`, gateway cookies) **MUST NOT** appear in this list -- they are stripped unconditionally.
 
 ### 3.4 Redis Keys (read-only and JWT cache)
 
@@ -576,25 +582,54 @@ Audit (via Audit Service): config reload (with diff), key rotation, JWKS fetch f
 
 **Consequences**: In-flight requests may finish under the previous table; that's the desired behavior.
 
-## 6. Open Questions
+### DD-ROUTER-05: Gateway Does Basic Auth Checks Only
 
-### OQ-ROUTER-01: Per-Route Authorization Hints
+**Decision**: The Router validates that the request has a valid session and a freshly-minted gateway JWT. It does **not** check license tier, roles, scopes, or tenant access. Those are downstream-service responsibilities.
 
-Should the route table optionally carry a list of required roles per route, so the Router rejects with 403 before forwarding when the JWT's roles don't match? Pros: cheaper rejection. Cons: duplicates authorization logic; downstream must still enforce, so this is best-effort only. Decision pending UX of tenant-admin error messaging.
+**Why**:
+- Authorization belongs next to the data. Each downstream service already enforces RBAC and visibility against its own model -- duplicating it at the gateway would create two sources of truth.
+- The JWT carries `sub` and `tid`. Anything richer (roles, license, scopes) is intentionally absent from the v1 claim contract; see [BFF DESIGN §3.8](../bff/DESIGN.md#38-gateway-jwt-claim-contract).
+- The gateway must stay a thin, fast hot-path component. Adding policy here adds latency and a redeploy surface for every authz change.
 
-### OQ-ROUTER-02: Streaming Limits for Uploads
+**Consequences**: A user with no permission for a feature still reaches the downstream service, which returns 403. That's the right place for the decision.
 
-Should the Router cap request body size per route (e.g., 100 MB CSV uploads)? If yes, we need a per-route `max_body_bytes` field. Pending product input on largest legitimate upload size.
+### DD-ROUTER-06: No Request Body Size Limits in v1
 
-### OQ-ROUTER-03: WebSocket Reauth
+**Decision**: The Router does not enforce `max_body_bytes`. No per-route upload caps.
 
-Long-lived WebSockets carry one JWT minted at upgrade time. After 5 min the JWT expires, but the connection is still open. Options: (a) periodically inject a refreshed JWT in a custom protocol frame, (b) require the server to re-validate via session lookup periodically, (c) accept the gap. v1 likely picks (c) since downstream services are inside the trust boundary; revisit if WebSocket usage grows.
+**Why**:
+- v1 has no end-user upload features. CSV exports are downloads (response body), not uploads. Connector configuration payloads are tiny.
+- Adding a knob with no real consumer is YAGNI and risks misconfiguration that silently breaks a future feature.
 
-### OQ-ROUTER-04: Header Allowlist for Forwarding
+**Consequences**: When an upload feature lands, this gets revisited as a normal config addition.
 
-Today: strip a few reserved headers, pass the rest. Should we instead allowlist headers and drop unknowns? Safer, but might break debugging headers (`X-Request-Trace`, `X-Tenant-Hint`). Decision pending audit of which headers internal services actually use.
+### DD-ROUTER-07: WebSocket JWT Frozen at Upgrade Time
 
-## 7. Traceability
+**Decision**: A WebSocket connection carries the JWT minted at upgrade. The Router does not re-mint or re-inject during the connection's lifetime.
+
+**Why**:
+- v1 has no plan for dynamic JWT refresh on a live socket.
+- Downstream services are inside the trust boundary -- a stale `tid`/`sub` on a long-lived socket is not a security concern, and authorization is enforced against current data on each operation anyway.
+
+**Consequences**: Long-lived sockets after a session revoke continue until the client closes them. If that becomes a problem, the answer is not in-band JWT refresh -- it is per-socket session checks emitted from the BFF on revoke. Out of scope for v1.
+
+### DD-ROUTER-08: Header Strip List = Hardcoded + Config
+
+**Decision**: The Router strips two categories of headers before forwarding:
+
+1. **Hardcoded gateway-reserved**: `Authorization` (always replaced with the minted JWT), `X-Correlation-Id` (always set by the gateway), `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, plus the gateway's session and CSRF cookies (`__Host-sid`, CSRF cookie).
+2. **Operator-configured**: an explicit list in the route ConfigMap (`defaults.strip_request_headers`) that callers want stripped for cluster hygiene (e.g. `X-Real-IP`, `Forwarded`, anything that conflicts with internal conventions).
+
+Everything else passes through.
+
+**Why**:
+- Hardcoded list covers the security-critical headers that must never be operator-removable (a misconfig that lets a browser-supplied `Authorization` reach a downstream service is a breach).
+- Config list lets operators harden the deployment without a code change.
+- A pure allowlist would force a config update for every new debugging header used by an internal service -- friction with no real safety gain inside the trust boundary.
+
+**Consequences**: New downstream services can rely on any non-reserved header passing through. The config-driven strip list is reviewed at deploy time alongside the route table.
+
+## 6. Traceability
 
 - **PRD**: [PRD.md](./PRD.md)
 - **Sibling**: [BFF PRD](../bff/PRD.md), [BFF DESIGN](../bff/DESIGN.md) -- session lifecycle, OIDC, gateway JWT schema (3.8), Redis data model (3.7)
