@@ -38,7 +38,7 @@ date: 2026-04-28
   - [DD-ROUTER-04: arc-swap for Route Table](#dd-router-04-arc-swap-for-route-table)
   - [DD-ROUTER-05: Gateway Does Basic Auth Checks Only](#dd-router-05-gateway-does-basic-auth-checks-only)
   - [DD-ROUTER-06: No Request Body Size Limits in v1](#dd-router-06-no-request-body-size-limits-in-v1)
-  - [DD-ROUTER-07: WebSocket JWT Frozen at Upgrade Time](#dd-router-07-websocket-jwt-frozen-at-upgrade-time)
+  - [DD-ROUTER-07: WebSocket JWT Frozen at Upgrade Time, Bounded by Max Lifetime](#dd-router-07-websocket-jwt-frozen-at-upgrade-time-bounded-by-max-lifetime)
   - [DD-ROUTER-08: Header Strip List = Hardcoded + Config](#dd-router-08-header-strip-list--hardcoded--config)
 - [6. Traceability](#6-traceability)
 
@@ -315,7 +315,7 @@ Does not modify request body. Does not modify response headers (apart from strip
 The terminal stage of the request path -- everything else feeds into the upstream call.
 
 ##### Responsibility scope
-Open the upstream connection (pooled `hyper::Client`), stream request body, await response, stream response body back. Enforce `timeout_ms`. Handle WebSocket upgrade for routes flagged `websocket: true`.
+Open the upstream connection (pooled `hyper::Client`), stream request body, await response, stream response body back. Enforce `timeout_ms`. Handle WebSocket upgrade for routes flagged `websocket: true`, including enforcing the global `gateway.websocket_max_lifetime_seconds` cap (see DD-ROUTER-07) -- close the socket with a normal-closure code when the deadline is reached.
 
 ##### Responsibility boundaries
 No retries. No payload transformation. No per-tenant rate limiting -- that's the ingress and per-service middleware.
@@ -733,15 +733,20 @@ Audit (via Audit Service): config reload (with diff), key rotation, JWKS fetch f
 
 **Consequences**: When an upload feature lands, this gets revisited as a normal config addition.
 
-### DD-ROUTER-07: WebSocket JWT Frozen at Upgrade Time
+### DD-ROUTER-07: WebSocket JWT Frozen at Upgrade Time, Bounded by Max Lifetime
 
-**Decision**: A WebSocket connection carries the JWT minted at upgrade. The Router does not re-mint or re-inject during the connection's lifetime.
+**Decision**: A WebSocket connection carries the JWT minted at upgrade. The Router does **not** re-mint or re-inject during the connection's lifetime. To bound the post-revoke staleness window, the Router enforces a configurable **max socket lifetime** (Helm value `gateway.websocket_max_lifetime_seconds`, default `3600` = 1 hour). When the wall-clock deadline is reached, the Router closes the socket with a normal-closure code; the client reconnects and re-authenticates, picking up the current session state (or 401 if the session is gone).
 
 **Why**:
-- v1 has no plan for dynamic JWT refresh on a live socket.
-- Downstream services are inside the trust boundary -- a stale `tid`/`sub` on a long-lived socket is not a security concern, and authorization is enforced against current data on each operation anyway.
+- v1 has no plan for in-band JWT refresh on a live socket -- complicates the protocol, complicates client code, and the only real benefit is faster claim freshness which the JWT TTL bound (≤ 300 s) already covers for non-WebSocket traffic.
+- Downstream services are inside the trust boundary -- a stale `tid`/`sub` on a long-lived socket is not a security concern in itself, and authorization is enforced against current data on each operation anyway.
+- A bounded max lifetime caps the worst case for sockets opened just before a revoke. Without it, a malicious or buggy client could hold the connection open indefinitely after offboarding.
+- Implementing the cap in the **Router** keeps the policy in one place. The **BFF** still owns session revoke; the Router does not need to subscribe to revoke events for this control to work.
 
-**Consequences**: Long-lived sockets after a session revoke continue until the client closes them. If that becomes a problem, the answer is not in-band JWT refresh -- it is per-socket session checks emitted from the BFF on revoke. Out of scope for v1.
+**Consequences**:
+- Worst-case post-revoke window for an open socket = `websocket_max_lifetime_seconds`. Default (1 h) is acceptable for analytics dashboard streams; tighten via Helm if a deployment needs faster turnaround.
+- Clients on long-lived sockets see a connection close roughly every hour and **MUST** reconnect cleanly. This is documented in the SPA WebSocket client guidelines.
+- A revocation-triggered disconnect is **not** part of v1. If a future deployment needs near-zero post-revoke staleness on sockets, the design path is: BFF publishes `(sid)` on a Redis pub/sub channel during the revoke Lua script (still shared Redis, still no Redpanda), and the Router subscribes per-pod and closes any socket bound to that `sid`. That mechanism is deferred until a real driver appears.
 
 ### DD-ROUTER-08: Header Strip List = Hardcoded + Config
 

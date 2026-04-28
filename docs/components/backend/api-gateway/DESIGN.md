@@ -149,6 +149,7 @@ Helm values that affect both modules:
 | `gateway.session_refresh_safety_margin_seconds` | 30 | `refresh_at = expires_at − safety_margin` returned to the SPA |
 | `gateway.session_absolute_lifetime_seconds` | 28800 | Hard cap (BFF) |
 | `gateway.jwt_ttl_seconds` | 120 | Gateway JWT TTL (Router); must be ≤300 |
+| `gateway.websocket_max_lifetime_seconds` | 3600 | Hard cap on WebSocket connection lifetime (Router); bounds post-revoke staleness, see [Router DD-ROUTER-07](./router/DESIGN.md#dd-router-07-websocket-jwt-frozen-at-upgrade-time-bounded-by-max-lifetime) |
 | `gateway.csrf_origins` | [] | Allowlist of acceptable `Origin` values for `/auth/*` mutations |
 | `gateway.routes_configmap` | `gateway-routes` | ConfigMap with the route table |
 | `gateway.signing_keys_secret` | `bff-signing-keys` | Secret with signing keys |
