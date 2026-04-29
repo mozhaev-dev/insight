@@ -196,21 +196,33 @@ The cookie value **MUST** be opaque -- no claims, no JWT, no user-identifying da
 
 - [ ] `p1` - **ID**: `cpt-insightspec-fr-bff-session-refresh`
 
-The system **MUST** expose `POST /auth/refresh`. When called with a valid session cookie, it **MUST**:
+The system **MUST** expose `POST /auth/refresh`. The cookie value is the `session_id` and **rotates** on every successful refresh. Behaviour:
 
-1. Reject (401) if the session is not present in Redis.
-2. Compute `new_exp = min(now + session_ttl, absolute_expires_at)`.
-3. Update the session record's `expires_at`, the key's Redis TTL, and the user-index sorted-set score to `new_exp`. These three updates **MUST** be applied as one atomic batch.
-4. Re-issue the session cookie with a fresh `Max-Age`.
-5. Return `200` with a JSON body containing `expires_at` (epoch seconds) and `refresh_at` (epoch seconds, recommended next-refresh moment = `expires_at − safety_margin`). `safety_margin` is configurable, default 30 s.
+1. **Stale cookie / no session in Redis** → 401, clear the cookie.
+2. **Cookie value found in `bff:session:*`** (normal path):
+   1. Generate a fresh `session_id` (`new_sid`) from a CSPRNG, ≥128 bits entropy.
+   2. Compute `new_exp = min(now + session_ttl, absolute_expires_at)`.
+   3. Compute `refresh_at = (new_exp − safety_margin) + jitter`, where `jitter` is a uniform random offset in the range `[−jitter_window/2, +jitter_window/2]`. `safety_margin` defaults to 30 s. `jitter_window` defaults to 10 s.
+   4. **Atomically** rotate the session: write the grace mapping `bff:swap:{old_sid} → new_sid` with a TTL of `grace_ms` (default `250 ms`); rename `bff:session:{old_sid}` to `bff:session:{new_sid}` and update `expires_at` + Redis TTL to `new_exp`; replace the user-index ZSET entry; replace the IdP-sid index entry; delete `router:jwt_cache:{old_sid}`. All of this in one batch.
+   5. Re-issue the session cookie with the new `session_id` and `Max-Age = new_exp − now`.
+   6. Return `200 {expires_at, refresh_at}`.
+3. **Cookie value found in `bff:swap:*` (grace path)**:
+   1. Resolve the swap to `new_sid`. The session is already current; do **not** rotate again.
+   2. Read `expires_at` from `bff:session:{new_sid}`.
+   3. Compute a freshly jittered `refresh_at`.
+   4. Set the cookie to `new_sid` and return `200 {expires_at, refresh_at}`.
 
-The system **MUST NOT** extend the session on any other endpoint or proxied API call. Regular `/api/*` traffic does not slide the TTL.
+The grace window (`grace_ms`, default 250) **MUST** be small. Outside it, the old `session_id` is unrecoverable: 401 + clear cookie.
 
-The system **MUST NOT** call the IdP refresh-token endpoint as part of `/auth/refresh`. v1 does not store or use IdP access/refresh tokens after login. Hard-cap behaviour is delegated to the Redis TTL: once `expires_at` reaches `absolute_expires_at`, the next `EXPIREAT` either keeps the key alive briefly or evicts it; the user is then forced to log in again.
+The system **MUST NOT** extend the session on any other endpoint or proxied API call. Regular `/api/*` traffic does not slide the TTL and does **not** rotate the cookie. A stale cookie on `/api/*` returns 401 immediately — the SPA must call `/auth/refresh` first.
 
-The SPA uses `refresh_at` to schedule its next call. `GET /auth/me` **MUST** return the same two fields so the SPA can prime its timer at page load.
+The system **MUST NOT** call the IdP refresh-token endpoint as part of `/auth/refresh`. v1 does not store or use IdP access/refresh tokens after login. Hard-cap behaviour is delegated to the Redis TTL: once `new_exp` reaches `absolute_expires_at`, the next `EXPIREAT` either keeps the key alive briefly or evicts it; the user is then forced to log in again.
 
-**Rationale**: Explicit refresh keeps idle sessions short-lived without sliding-TTL machinery on the hot path. Returning `refresh_at` lets the operator tune `session_ttl` without an SPA change. Decoupling from the IdP keeps `/auth/refresh` fast and resilient to IdP outages.
+`GET /auth/me` **MUST** return the same `{expires_at, refresh_at}` fields (with a fresh `refresh_at` jitter) so the SPA can prime its refresh timer at page load.
+
+**SPA contract.** The SPA **MUST** coordinate `/auth/refresh` calls across browser tabs of the same session, so only one tab fires the refresh per window. The recommended mechanism is `BroadcastChannel` with a `localStorage` fallback: a leader tab calls `/auth/refresh`, broadcasts the result, follower tabs read it without firing their own request. The SPA **MUST** use the server-supplied `refresh_at` (which is already jittered) as the scheduling target; an additional client-side jitter is permitted but not required.
+
+**Rationale**: Cookie rotation detects token theft -- two parties holding the same cookie eventually diverge, and the one out of sync hits 401. The grace window absorbs benign races (page reload mid-refresh, parallel refresh from siblings during the brief leader-election window). Server-side jitter prevents an attacker from aligning a forged `/auth/refresh` to the predictable grace window. Multi-tab coordination eliminates the most common legit cause of parallel refreshes.
 
 **Actors**: `cpt-insightspec-actor-browser-user`
 
@@ -493,18 +505,20 @@ JWKS publication and `/api/*` reverse proxy live on the [Router](../router/PRD.m
 
 **Preconditions**: Valid session cookie; current time before `absolute_expires_at`.
 
-**Main Flow**:
-1. SPA calls `POST /auth/refresh`. The cadence is driven by the `refresh_at` value the SPA received in the previous response.
-2. BFF reads the cookie, fetches `bff:session:{id}` (HMGET).
-3. BFF computes `new_expires_at = min(now + session_ttl, absolute_expires_at)`.
-4. BFF runs a single MULTI/EXEC pipeline that updates the `expires_at` HASH field, the key TTL via `EXPIREAT`, and the ZSET score in `bff:user_sessions:{user_id}` to `new_expires_at`.
-5. BFF re-issues the cookie with `Max-Age = new_expires_at − now` and returns `200` with body `{expires_at: new_expires_at, refresh_at: new_expires_at − safety_margin}`.
+**Main Flow** (cookie rotation):
+1. SPA leader tab calls `POST /auth/refresh` at the server-supplied (jittered) `refresh_at`.
+2. BFF reads the cookie value `old_sid`, fetches `bff:session:{old_sid}`.
+3. BFF generates a fresh `new_sid` (CSPRNG, ≥128 bits) and computes `new_exp = min(now + session_ttl, absolute_expires_at)`.
+4. BFF runs a single MULTI/EXEC pipeline: write `bff:swap:{old_sid} → new_sid` (PX = `grace_ms`); rename `bff:session:{old_sid}` to `bff:session:{new_sid}` and update `expires_at` + Redis TTL; replace ZSET entry in `bff:user_sessions:{user_id}`; replace SET entry in `bff:sid_index:{iss}:{idp_sid}`; `DEL router:jwt_cache:{old_sid}`.
+5. BFF re-issues the cookie with `new_sid` and `Max-Age = new_exp − now`. Body: `{expires_at: new_exp, refresh_at: jittered}`.
+6. SPA leader broadcasts the result to follower tabs via `BroadcastChannel`/`localStorage`; followers do not fire their own refresh.
 
-**Postconditions**: Session lives for another TTL window. ZSET score and key TTL aligned. SPA has the next `refresh_at` to schedule from.
+**Postconditions**: Cookie value rotated. Old `bff:session:{old_sid}` is gone; `bff:swap:{old_sid}` lives for `grace_ms`. ZSET score, key TTL, and IdP-sid index all reference the new `session_id`.
 
 **Alternative Flows**:
-- **Session unknown**: 401, cookie cleared. (Includes the case where Redis evicted the key on hitting `absolute_expires_at`.)
-- **Past absolute cap (rare race)**: `EXPIREAT` with a past timestamp evicts the key; the SPA's next request returns 401.
+- **Stale cookie within grace window**: BFF resolves `bff:swap:{old_sid} → new_sid`, returns `200` with `Set-Cookie new_sid`; **no** further rotation. Used when a sibling tab fires `/auth/refresh` between the leader's call and broadcast.
+- **Stale cookie past grace window**: BFF returns `401` and clears the cookie. SPA redirects to `/auth/login`.
+- **Past absolute cap**: `EXPIREAT` with a past timestamp evicts the key; the SPA's next request returns 401.
 
 #### Log Out Everywhere
 
@@ -563,7 +577,7 @@ JWKS publication and `/api/*` reverse proxy live on the [Router](../router/PRD.m
 
 - The customer OIDC provider supports authorization code + PKCE, RP-initiated logout, and back-channel logout. (Refresh-token support is not required in v1; the BFF does not call the IdP refresh endpoint.)
 - The SPA and BFF are served from the same registrable domain (first-party cookies).
-- The SPA can poll `/auth/refresh` on a fixed cadence and handle 401 by redirecting to `/auth/login`.
+- The SPA schedules `/auth/refresh` from the server-supplied (jittered) `refresh_at`, coordinates a single leader tab via `BroadcastChannel` / `localStorage` so siblings do not fire parallel refreshes, and handles 401 by redirecting to `/auth/login`.
 - Redis is deployed in HA mode; session loss requires re-login for affected users -- acceptable.
 
 ## 12. Risks
@@ -578,3 +592,5 @@ JWKS publication and `/api/*` reverse proxy live on the [Router](../router/PRD.m
 | Back-channel logout endpoint abuse | Spoofed logout tokens trigger session revocation | Strict OIDC `logout_token` validation: signature, `iss`, `aud`, `iat`, `events`. `jti` replay protection via `bff:logout_jti:{iss}:{jti}` SET-NX with TTL ≥ `iat + max_clock_skew`. |
 | `logout_token` without `sid` widens blast radius | A misconfigured IdP that omits `sid` causes every back-channel logout to behave as "log out everywhere" for the named `sub` | Runbook callout; operator-facing log line on every `(iss, sub)`-only fallback so the pattern is detectable |
 | User-sessions index drift | Index lists sessions that no longer exist (or vice versa) | Atomic ops via MULTI/EXEC pipeline; janitor reconciles |
+| Multi-tab without coordination | Sibling tabs fire parallel `/auth/refresh`, one wins, the others miss the grace window and 401 → unnecessary user logout | SPA contract requires `BroadcastChannel`/`localStorage` leader election; grace window absorbs the rare residual race |
+| Sophisticated attacker stays in sync with rotation | Stolen cookie remains usable as long as the attacker races every refresh | Server-side jitter on `refresh_at` raises timing-attack bar; rate limits on `/auth/*` raise volumetric noise; future option: revoke-all-on-stale-token-past-grace |

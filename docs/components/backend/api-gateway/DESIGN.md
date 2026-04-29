@@ -149,7 +149,9 @@ Helm values that affect both modules:
 | `gateway.replicas` | 2 | Pod count |
 | `gateway.image` | (chart) | Container image |
 | `gateway.session_ttl_seconds` | 120 | Session cookie TTL (BFF) |
-| `gateway.session_refresh_safety_margin_seconds` | 30 | `refresh_at = expires_at − safety_margin` returned to the SPA |
+| `gateway.session_refresh_safety_margin_seconds` | 30 | Base offset for `refresh_at = expires_at − safety_margin` (BFF) |
+| `gateway.refresh_jitter_seconds` | 10 | Total jitter window applied to `refresh_at`; uniform random ∈ ±half this value (BFF) |
+| `gateway.refresh_grace_ms` | 250 | TTL of `bff:swap:{old_sid}`; window in which a just-rotated cookie can still resolve on `/auth/refresh` (BFF) |
 | `gateway.session_absolute_lifetime_seconds` | 28800 | Hard cap (BFF) |
 | `gateway.jwt_ttl_seconds` | 120 | Gateway JWT TTL (Router); must be ≤300 |
 | `gateway.websocket_max_lifetime_seconds` | 3600 | Global hard cap on WebSocket connection lifetime (Router). Per-route override available in `routes.yaml`. Bounds post-revoke staleness, see [Router DD-ROUTER-07](./router/DESIGN.md#dd-router-07-websocket-jwt-frozen-at-upgrade-time-bounded-by-max-lifetime). |

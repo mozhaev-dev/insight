@@ -42,6 +42,7 @@ date: 2026-04-28
   - [DD-BFF-07: `/auth/refresh` Returns Next-Refresh Deadline](#dd-bff-07-authrefresh-returns-next-refresh-deadline)
   - [DD-BFF-08: `SameSite=Strict` Today, Pluggable Cookie Classes Later](#dd-bff-08-samesitestrict-today-pluggable-cookie-classes-later)
   - [DD-BFF-09: Janitor Coordinates via Redis Lock](#dd-bff-09-janitor-coordinates-via-redis-lock)
+  - [DD-BFF-10: Rolling Cookies on `/auth/refresh` with Grace + Jitter](#dd-bff-10-rolling-cookies-on-authrefresh-with-grace--jitter)
 - [6. Traceability](#6-traceability)
 
 <!-- /toc -->
@@ -265,7 +266,7 @@ The single entry point for every read or write of session state. Centralising Re
 Create, read, refresh, list-by-user, revoke (single, all-but-current, all). Keeps `bff:session:*` and `bff:user_sessions:*` consistent using the cheapest Redis primitive that meets the atomicity requirement of each op:
 
 - **Create** — single `MULTI`/`EXEC` pipeline (`HSET` + `EXPIREAT` + `ZADD` + `SADD`). No conditional logic, no read-then-write, so no Lua. See §3.6 Login.
-- **Refresh** — single `HMGET` + `MULTI`/`EXEC` pipeline (`HSET expires_at` + `EXPIREAT` + `ZADD`). Parallel refreshes converge on the same `new_exp` ±1 s — no CAS, no lock. See §3.6 Session Refresh.
+- **Refresh** — `HMGET` + `MULTI`/`EXEC` pipeline that rotates the `session_id`: writes the grace key `bff:swap:{old_sid} → new_sid` (PX = `grace_ms`), `RENAME`s the session HASH, updates `expires_at` + key TTL + ZSET score + IdP-sid SET, `DEL`s the old `router:jwt_cache:*`. Stale cookie within grace resolves via `bff:swap:*` without re-rotating. Past grace → 401. See §3.6 Session Refresh.
 - **Revoke (single)** — `HMGET` to read `user_id`, `idp_iss`, `idp_sid`, then a `MULTI`/`EXEC` pipeline of four deletes (`DEL bff:session` + `ZREM bff:user_sessions` + `SREM bff:sid_index` + `DEL router:jwt_cache`). Idempotent: revoking an already-revoked session is silently a no-op. See §3.6 Logout / Back-Channel.
 - **Revoke (user)** — `ZRANGE bff:user_sessions:{user_id} 0 -1` to enumerate, pipelined `HMGET` on each session for `(idp_iss, idp_sid)`, then one `MULTI`/`EXEC` pipeline that `DEL`s every `bff:session:{sid}` and `router:jwt_cache:{sid}`, `SREM`s each entry from `bff:sid_index:*`, and finally `DEL`s the whole `bff:user_sessions:{user_id}` index. A parallel login during the op survives the revoke — accepted as standard "log out everywhere" semantics. See §3.6 Logout Everywhere.
 
@@ -431,6 +432,8 @@ sequenceDiagram
 
 **Use cases**: `cpt-insightspec-usecase-bff-refresh`
 
+The cookie value **is** the `session_id` and rotates on every successful refresh. Two paths: normal rotation, and a small grace window for stale cookies arriving on `/auth/refresh` itself.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -438,21 +441,40 @@ sequenceDiagram
     participant B as BFF
     participant R as Redis
 
-    U->>B: POST /auth/refresh (cookie __Host-sid)
-    B->>R: HMGET bff:session:{sid} absolute_expires_at user_id ...
-    R-->>B: fields
-    Note over B: If key missing → 401, clear cookie.<br/>No IdP call. Tokens stored at login are not refreshed in v1.
-    B->>B: new_exp = min(now + session_ttl, absolute_expires_at)
-    B->>R: MULTI<br/>HSET bff:session:{sid} expires_at new_exp<br/>EXPIREAT bff:session:{sid} new_exp<br/>ZADD bff:user_sessions:{uid} new_exp sid<br/>EXEC
-    R-->>B: OK
-    B-->>U: 200 {expires_at: new_exp, refresh_at: new_exp - safety_margin}<br/>Set-Cookie __Host-sid Max-Age=(new_exp - now)
+    U->>B: POST /auth/refresh (cookie = old_sid)
+    B->>R: HMGET bff:session:{old_sid} user_id idp_iss idp_sid absolute_expires_at
+    alt key exists (normal path)
+        R-->>B: fields
+        B->>B: new_sid = csprng()<br/>new_exp = min(now + session_ttl, absolute_expires_at)<br/>refresh_at = (new_exp - safety_margin) + uniform(±jitter/2)
+        B->>R: MULTI<br/>SET bff:swap:{old_sid} new_sid PX grace_ms NX<br/>RENAME bff:session:{old_sid} → bff:session:{new_sid}<br/>HSET bff:session:{new_sid} expires_at new_exp<br/>EXPIREAT bff:session:{new_sid} new_exp<br/>ZREM bff:user_sessions:{uid} old_sid<br/>ZADD bff:user_sessions:{uid} new_exp new_sid<br/>SREM bff:sid_index:{iss}:{idp_sid} old_sid<br/>SADD bff:sid_index:{iss}:{idp_sid} new_sid<br/>DEL router:jwt_cache:{old_sid}<br/>EXEC
+        R-->>B: OK
+        B-->>U: 200 {expires_at: new_exp, refresh_at}<br/>Set-Cookie __Host-sid = new_sid, Max-Age = new_exp - now
+    else key missing — try grace
+        B->>R: GET bff:swap:{old_sid}
+        alt swap exists → recently rotated
+            R-->>B: new_sid
+            B->>R: HMGET bff:session:{new_sid} expires_at
+            R-->>B: expires_at
+            B->>B: refresh_at = (expires_at - safety_margin) + uniform(±jitter/2)
+            B-->>U: 200 {expires_at, refresh_at}<br/>Set-Cookie __Host-sid = new_sid, Max-Age = expires_at - now<br/>Note: NO additional rotation
+        else swap missing — past grace window
+            R-->>B: nil
+            B-->>U: 401 + Set-Cookie __Host-sid Max-Age=0
+        end
+    end
 ```
 
-**Concurrency.** Parallel refreshes from the same SPA (tab restored + timer fires) both write the same `new_exp` (within ±1 s clock skew). Both writes are idempotent on `(expires_at, ZSET score)`; last writer wins by ≤1 s, the cookie value (`session_id`) is unchanged, the user stays logged in. No CAS, no lock.
+**Cookie rotation.** Each successful refresh issues a fresh `session_id`. Old session record is gone (RENAME consumed it); old `router:jwt_cache:{old_sid}` is deleted to prevent the Router from serving a JWT bound to the rotated SID. The user-sessions ZSET and the IdP-sid SET are updated in the same pipeline so listing/back-channel paths stay consistent.
 
-**Cap behaviour.** Once the rolling `new_exp` reaches `absolute_expires_at`, the `min()` clamps it. After that point, EXPIREAT may set a past timestamp, which Redis treats as immediate eviction — the next request finds the key gone and returns 401, exactly as intended.
+**Grace window.** `bff:swap:{old_sid} → new_sid` lives for `grace_ms` (default `250 ms`, Helm value `gateway.refresh_grace_ms`). It exists to absorb benign races: a sibling tab firing `/auth/refresh` between the leader's call and the leader's broadcast, a network retry of the same request, a page reload mid-refresh. In the grace path we resolve to the current `new_sid` and set the cookie -- but we do **not** rotate again, otherwise rapid races would churn tokens.
 
-**Why no IdP call.** The BFF stores `id_token` at login (used by `/auth/logout` for `id_token_hint`) but does not store IdP access/refresh tokens. v1 never calls IdP-protected APIs on the user's behalf, so there is nothing to refresh. If a v2 feature needs fresh IdP tokens, it will be added as a separate concern (in-process event with Redis-backed dedup), not coupled into `/auth/refresh`.
+**Jitter.** `refresh_at` is `(expires_at - safety_margin) + uniform(-jitter/2, +jitter/2)`. `safety_margin` defaults to 30 s (`gateway.session_refresh_safety_margin_seconds`). `jitter` defaults to 10 s (`gateway.refresh_jitter_seconds`), so the SPA's next refresh moment is randomised within a 10-second window. Defends against an attacker who sees the SPA's predictable schedule and tries to align a forged `/auth/refresh` to the same `grace_ms` window.
+
+**Multi-tab coordination (SPA-side contract).** With multiple tabs of the same app, the SPA **MUST** elect a single leader to fire `/auth/refresh` per window. Recommended: `BroadcastChannel` for modern browsers, `localStorage` events as a fallback. The leader broadcasts `{expires_at, refresh_at}` after a successful refresh; followers update their timers without firing their own refresh. Without this, every tab racing `/auth/refresh` would burn the grace window on its own siblings.
+
+**No IdP call.** The BFF stores `id_token` at login (used by `/auth/logout` for `id_token_hint`) but does not store IdP access/refresh tokens. v1 never calls IdP-protected APIs on the user's behalf, so there is nothing to refresh. If a v2 feature needs fresh IdP tokens, it will be added as a separate concern (in-process event with Redis-backed dedup), not coupled into `/auth/refresh`.
+
+**`/api/*` is not affected.** The Router does **not** consult `bff:swap:*` -- a stale cookie on `/api/*` is just a 401. The SPA must call `/auth/refresh` first, get the fresh cookie, and retry. Multi-tab coordination + grace on `/auth/refresh` keep this rare in practice.
 
 #### Logout -- Local + RP-Initiated
 
@@ -561,6 +583,7 @@ graph LR
     SIDX["bff:sid_index:{iss}:{idp_sid}<br/>SET of session_id"]
     LS["bff:login_state:{state}<br/>HASH (5 min TTL)"]
     LJTI["bff:logout_jti:{iss}:{jti}<br/>STRING — replay guard"]
+    SWAP["bff:swap:{old_sid}<br/>STRING — refresh grace (250 ms)"]
 
     USER --> IDX
     IDX --> S1
@@ -624,6 +647,16 @@ graph LR
 **Fields**: `pkce_verifier`, `nonce`, `redirect_to`
 
 **TTL**: 5 minutes. One-shot -- deleted on callback.
+
+#### Key: `bff:swap:{old_session_id}`
+
+**Type**: Redis STRING. Value: the new `session_id` that the old one rotated into.
+
+**Purpose**: Grace window for `/auth/refresh` cookie rotation. When a stale cookie (just-rotated) arrives within `grace_ms`, the BFF resolves it to the current `session_id` and re-issues the cookie without performing another rotation.
+
+**TTL**: `gateway.refresh_grace_ms`, default `250 ms`. Set with `PX` (millisecond precision).
+
+**Why a separate key, not a HASH field**: `bff:session:*` is keyed by current `session_id`; the swap key is the only way to look up a rotation by *previous* `session_id`. Lifetime is much shorter than the session itself, so a separate key with PX TTL is the right shape. Read-only by the BFF, never written by the Router.
 
 #### Key: `bff:logout_jti:{iss}:{jti}`
 
@@ -901,10 +934,26 @@ Audit (via Audit Service): login OK, login fail, refresh, logout, revoke (single
 
 **Consequences**: Pod with the lock takes the work; others skip. Backlog metric alerts if no pod runs the pass for more than `2 × interval`.
 
+### DD-BFF-10: Rolling Cookies on `/auth/refresh` with Grace + Jitter
+
+**Decision**: The session cookie is rotated on every successful `/auth/refresh`. A small grace window (`bff:swap:{old_sid} → new_sid`, default 250 ms) absorbs benign races on `/auth/refresh` only. The server-supplied `refresh_at` is jittered within a 10 s window. The SPA is contractually required to coordinate `/auth/refresh` across browser tabs (BroadcastChannel / localStorage).
+
+**Why**:
+- Rotating cookies turns long-lived stolen credentials into short-lived ones. After a rotation, the previous cookie is rejected past the grace window -- a thief who snapshotted the cookie sees `401` on the next refresh attempt.
+- Without grace, even a 100 ms multi-tab race results in 401 → user logged out unnecessarily. 250 ms is small enough that an attacker can't reasonably align to it across the network, large enough to absorb realistic SPA races.
+- Without jitter, an attacker who knows `refresh_at` can fire their own `/auth/refresh` in the exact same 250 ms window. ±5 s jitter (10 s window) means the attacker would need to refresh continuously, raising audit / rate-limit signal.
+- Tab coordination eliminates the most common legit cause of parallel refreshes (multiple tabs of the same SPA), so the grace window is essentially reserved for true edge cases (page reload mid-refresh, network retry).
+- `/api/*` does **not** consult `bff:swap:*`. Keeps the Router's hot path unchanged: stale cookie on `/api/*` is just `401`, the SPA refreshes and retries. The same SPA discipline that handles tab coordination handles this transparently.
+
+**Consequences**:
+- Detection of token theft is probabilistic, not deterministic — a sophisticated attacker who races every refresh stays in sync. The intent is to make stolen-credential reuse expensive and noisy, not impossible. Stronger detection (e.g. revoke-all-on-stale-token-past-grace) is a future option.
+- One additional Redis key per active rotation, with sub-second TTL. Storage cost negligible.
+- SPA implementation needs the multi-tab coordination layer; documented in the SPA contract section of §3.6.
+
 ## 6. Traceability
 
 - **PRD**: [PRD.md](./PRD.md)
 - **Sibling**: [Router PRD](../router/PRD.md), [Router DESIGN](../router/DESIGN.md) -- gateway JWT minting, JWKS, `/api/*` proxy, route config
 - **Parent**: [API Gateway PRD](../PRD.md), [API Gateway DESIGN](../DESIGN.md) -- umbrella docs
 - **Backend**: [Backend PRD](../../specs/PRD.md), [Backend DESIGN](../../specs/DESIGN.md)
-- **ADRs**: [ADR/](./ADR/) -- to be authored alongside implementation. Decisions captured inline as DD-BFF-01..09 in §5 until then.
+- **ADRs**: [ADR/](./ADR/) -- to be authored alongside implementation. Decisions captured inline as DD-BFF-01..10 in §5 until then.
