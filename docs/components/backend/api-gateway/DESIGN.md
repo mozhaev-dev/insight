@@ -14,6 +14,9 @@ date: 2026-04-28
 - [3. Shared Infrastructure](#3-shared-infrastructure)
 - [4. Deployment Topology](#4-deployment-topology)
 - [5. Cross-Cutting Concerns](#5-cross-cutting-concerns)
+  - [5.1 Configuration Surface](#51-configuration-surface)
+  - [5.2 Observability](#52-observability)
+  - [5.3 Failure Handling](#53-failure-handling)
 - [6. Traceability](#6-traceability)
 
 <!-- /toc -->
@@ -91,10 +94,10 @@ Detailed component models, sequence diagrams, and data models live in the module
 | Concern | Owner | Notes |
 |---|---|---|
 | OIDC handshake | BFF | Router never talks to the IdP |
-| Session create / refresh / revoke | BFF | Owns the Lua scripts |
+| Session create / refresh / revoke | BFF | Per-op Redis primitive: pipeline (create / refresh) + (revoke under review) |
 | Cookie issue / clear | BFF | Router never sets cookies |
 | CSRF token issue & verify on `/auth/*` | BFF | Router relies on `SameSite=Strict` for `/api/*` |
-| IdP access-token refresh | BFF | Triggered on `/auth/refresh` |
+| IdP access-token refresh | _(not in v1)_ | Tokens not stored or refreshed; v1 never calls IdP-protected APIs on the user's behalf. |
 | Cookie validation on `/api/*` | Router (read-only via shared session manager) | Calls into the BFF-owned library |
 | Gateway JWT mint + sign | Router | EdDSA, claims defined in BFF DESIGN §3.8 |
 | JWKS publication | Router | `/.well-known/jwks.json` |
@@ -153,7 +156,6 @@ Helm values that affect both modules:
 | `gateway.auth_rate_per_ip` | 10 | `/auth/*` token-bucket rate per source IP, requests/min (BFF) |
 | `gateway.auth_burst_per_ip` | 20 | `/auth/*` token-bucket burst per source IP (BFF) |
 | `gateway.auth_login_state_max` | 1000 | Per-pod cap on concurrent `bff:login_state:*` entries (BFF); excess `/auth/login` returns 429 |
-| `gateway.idp_refresh_timeout_seconds` | 10 | Per-session refresh-lock TTL guarding concurrent IdP refresh (BFF) |
 | `gateway.logout_jti_clock_skew_seconds` | 60 | Tolerance for `iat` skew on OIDC `logout_token` -- inflates the replay-guard TTL by this amount (BFF) |
 | `gateway.csrf_origins` | [] | Allowlist of acceptable `Origin` values for `/auth/*` mutations |
 | `gateway.routes_configmap` | `gateway-routes` | ConfigMap with the route table |
@@ -175,7 +177,7 @@ Metrics, logs, and audit events are described in each module's DESIGN. They shar
 - Redis unreachable → 503 from `/api/*`, 401 from `/auth/*` mutations, readiness fails. No local cache, no degraded mode -- see [BFF DD-BFF-06](./bff/DESIGN.md#dd-bff-06-redis-outage--no-auth-fail-closed).
 - Signing-key Secret missing → readiness fails, no requests served.
 - Route ConfigMap invalid at startup → readiness fails. Invalid at runtime → keep current table, alert.
-- IdP unreachable during login → 502 with retry-after; existing sessions continue to work until they need IdP refresh.
+- IdP unreachable during login → 502 with retry-after. Existing sessions continue to work without contacting the IdP, since v1 does not refresh IdP tokens (see [BFF DESIGN §3.6 Session Refresh](./bff/DESIGN.md#36-interactions--sequences)).
 
 ## 6. Traceability
 

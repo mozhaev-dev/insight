@@ -75,7 +75,6 @@ The BFF is built on **cyberfabric-core ModKit** (same framework as the rest of t
 | `cpt-insightspec-fr-bff-gateway-jwt` | Claim contract owned here; minting performed by Router |
 | `cpt-insightspec-fr-bff-logout` | `/auth/logout` for local + RP-initiated; `/auth/oidc/back-channel-logout` for IdP-initiated |
 | `cpt-insightspec-fr-bff-csrf` | Double-submit token bound to session ID + `Origin` allowlist |
-| `cpt-insightspec-fr-bff-idp-refresh` | BFF refreshes IdP access token on demand using stored refresh token; failure → session revoke |
 
 #### NFR Allocation
 
@@ -263,7 +262,11 @@ Does not authorize business operations -- downstream services do that. Does not 
 The single entry point for every read or write of session state. Centralising Redis access here keeps atomicity guarantees and metrics uniform, and lets the Router link to the same code as a library for read-only session validation.
 
 ##### Responsibility scope
-Create, read, refresh, list-by-user, revoke (single, all-but-current, all). Owns the Lua scripts (`create_session`, `refresh_session`, `revoke_session`, `revoke_user`) that keep `bff:session:*` and `bff:user_sessions:*` consistent. `refresh_session` performs compare-and-swap on `expires_at` so concurrent refreshes never clobber a fresher one (see §3.6 Session Refresh).
+Create, read, refresh, list-by-user, revoke (single, all-but-current, all). Keeps `bff:session:*` and `bff:user_sessions:*` consistent using the cheapest Redis primitive that meets the atomicity requirement of each op:
+
+- **Create** — single `MULTI`/`EXEC` pipeline (`HSET` + `EXPIREAT` + `ZADD` + `SADD`). No conditional logic, no read-then-write, so no Lua. See §3.6 Login.
+- **Refresh** — single `HMGET` + `MULTI`/`EXEC` pipeline (`HSET expires_at` + `EXPIREAT` + `ZADD`). Parallel refreshes converge on the same `new_exp` ±1 s — no CAS, no lock. See §3.6 Session Refresh.
+- **Revoke single / revoke user** — atomicity mechanism documented per-op in §3.6. (Specifics under review.)
 
 ##### Responsibility boundaries
 Does not call the OIDC provider. Does not authenticate requests by itself -- callers (Auth Controller, Router) do. Does not own the cookie format.
@@ -280,7 +283,7 @@ Does not call the OIDC provider. Does not authenticate requests by itself -- cal
 Encapsulates the OIDC protocol so the rest of the BFF treats it as a small set of operations: authorize, exchange, refresh, end-session, validate logout token.
 
 ##### Responsibility scope
-Authorization code + PKCE flow, ID token validation (`iss`, `aud`, `nonce`, `exp`, signature), access-token refresh, RP-initiated logout, back-channel logout token validation per OIDC spec.
+Authorization code + PKCE flow, ID token validation (`iss`, `aud`, `nonce`, `exp`, signature), RP-initiated logout, back-channel logout token validation per OIDC spec. v1 does not call the IdP refresh-token endpoint -- access tokens are not stored or used inside the gateway.
 
 ##### Responsibility boundaries
 Does not store sessions. Does not maintain user-side state. Holds no IdP tokens beyond the lifetime of one operation.
@@ -405,7 +408,7 @@ sequenceDiagram
     B->>R: GET bff:login_state:{state}
     R-->>B: {verifier, nonce}
     B->>I: token exchange (code, verifier)
-    I-->>B: id_token, access_token, refresh_token
+    I-->>B: id_token (+ access/refresh tokens, not stored in v1)
     B->>B: validate id_token
     B->>ID: resolve(sub) → user_id, tenant_id
     ID-->>B: user_id, tenant_id
@@ -414,7 +417,7 @@ sequenceDiagram
         B->>R: EVAL revoke_session.lua (incoming sid)
         Note over B,R: Incoming SID is NEVER reused or extended.<br/>Revoked here to invalidate any planted/stale cookie.
     end
-    B->>R: EVAL create_session.lua (new sid)<br/>HSET bff:session:{sid} ...<br/>ZADD bff:user_sessions:{uid} expires_at sid<br/>SADD bff:sid_index:{iss}:{idp_sid} sid
+    B->>R: MULTI<br/>HSET bff:session:{sid} <fields><br/>EXPIREAT bff:session:{sid} expires_at<br/>ZADD bff:user_sessions:{uid} expires_at sid<br/>SADD bff:sid_index:{iss}:{idp_sid} sid<br/>EXEC
     R-->>B: OK
     B-->>U: 302 to SPA + Set-Cookie __Host-sid (new sid)<br/>(HttpOnly,Secure,Strict, Max-Age=session_ttl)
 ```
@@ -433,57 +436,22 @@ sequenceDiagram
     actor U as Browser
     participant B as BFF
     participant R as Redis
-    participant I as OIDC Provider
 
     U->>B: POST /auth/refresh (cookie __Host-sid)
-    B->>R: HMGET bff:session:{sid} (incl. expires_at AS observed_exp)
-    R-->>B: session
-    B->>B: check now < absolute_expires_at
+    B->>R: HMGET bff:session:{sid} absolute_expires_at user_id ...
+    R-->>B: fields
+    Note over B: If key missing → 401, clear cookie.<br/>No IdP call. Tokens stored at login are not refreshed in v1.
     B->>B: new_exp = min(now + session_ttl, absolute_expires_at)
-    opt IdP access_token near expiry — gated by per-session lock
-        B->>R: SET bff:refresh_lock:{sid} <our_token> NX EX <idp_refresh_timeout>
-        alt lock acquired (we own the IdP refresh)
-            B->>I: refresh_token grant
-            I-->>B: new access_token (+ rotated refresh_token)
-            Note over B,I: IdP rotated refresh_token -- store the new one<br/>or the next refresh fails.
-        else lock not acquired (sibling refresh in flight)
-            Note over B: Wait briefly (≤ idp_refresh_timeout), then re-read<br/>bff:session:{sid} and use whatever the winner stored.
-        end
-    end
-    B->>R: EVAL refresh_session.lua (sid, observed_exp, new_exp, ...)<br/>IF HGET bff:session:{sid} expires_at == observed_exp<br/>THEN HSET expires_at = new_exp<br/>     HSET access_token, refresh_token, access_expires_at (if changed)<br/>     ZADD bff:user_sessions:{uid} new_exp sid<br/>     EXPIREAT bff:session:{sid} new_exp<br/>     RETURN {ok, new_exp}<br/>ELSE RETURN {conflict, current_expires_at}
-    alt CAS OK
-        R-->>B: {ok, new_exp}
-        B-->>U: 200 {expires_at: new_exp, refresh_at: new_exp - safety_margin}<br/>Set-Cookie __Host-sid Max-Age=(new_exp - now)
-    else CAS conflict (parallel refresh already won)
-        R-->>B: {conflict, current_expires_at}
-        Note over B: Treat the winner's update as authoritative.<br/>Return its expires_at to the SPA -- no extra IdP call,<br/>no overwrite of newer access_token / refresh_token.
-        B-->>U: 200 {expires_at: current_exp, refresh_at: current_exp - safety_margin}<br/>Set-Cookie __Host-sid Max-Age=(current_exp - now)
-    end
+    B->>R: MULTI<br/>HSET bff:session:{sid} expires_at new_exp<br/>EXPIREAT bff:session:{sid} new_exp<br/>ZADD bff:user_sessions:{uid} new_exp sid<br/>EXEC
+    R-->>B: OK
+    B-->>U: 200 {expires_at: new_exp, refresh_at: new_exp - safety_margin}<br/>Set-Cookie __Host-sid Max-Age=(new_exp - now)
 ```
 
-**Concurrency model.** Two concerns coexist when an SPA fires parallel `/auth/refresh` (tab restored + timer fires):
+**Concurrency.** Parallel refreshes from the same SPA (tab restored + timer fires) both write the same `new_exp` (within ±1 s clock skew). Both writes are idempotent on `(expires_at, ZSET score)`; last writer wins by ≤1 s, the cookie value (`session_id`) is unchanged, the user stays logged in. No CAS, no lock.
 
-1. **IdP refresh token rotation.** Most IdPs rotate the `refresh_token` on each successful exchange, invalidating the previous one. If two BFF requests both call the IdP refresh endpoint, the second exchange invalidates the first's freshly issued tokens. We gate IdP refresh behind a per-session Redis NX lock (`bff:refresh_lock:{sid}`, TTL = IdP refresh timeout) so only one request talks to the IdP per session per window. The other request waits briefly and then re-reads the session record; it will see the winner's new tokens.
-2. **Session record CAS.** The `refresh_session` Lua script takes the originally observed `expires_at` as input and only writes if the current value still matches. This prevents a slow refresh from clobbering a fresher one. Conflict is reported, not retried -- the original caller serves the SPA the winner's `expires_at`, which is at least as fresh as what it would have written itself.
+**Cap behaviour.** Once the rolling `new_exp` reaches `absolute_expires_at`, the `min()` clamps it. After that point, EXPIREAT may set a past timestamp, which Redis treats as immediate eviction — the next request finds the key gone and returns 401, exactly as intended.
 
-Both mechanisms are lightweight (one Redis call each) and together close the race without serialising every refresh.
-
-#### IdP Token Refresh Failure
-
-**ID**: `cpt-insightspec-seq-bff-idp-refresh-fail`
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as BFF
-    participant R as Redis
-    participant I as OIDC Provider
-
-    B->>I: POST /token (grant_type=refresh_token)
-    I-->>B: 400 invalid_grant
-    B->>R: EVAL revoke_session.lua (sid, user_id, iss, idp_sid)
-    B-->>B: clear cookie, return 401
-```
+**Why no IdP call.** The BFF stores `id_token` at login (used by `/auth/logout` for `id_token_hint`) but does not store IdP access/refresh tokens. v1 never calls IdP-protected APIs on the user's behalf, so there is nothing to refresh. If a v2 feature needs fresh IdP tokens, it will be added as a separate concern (in-process event with Redis-backed dedup), not coupled into `/auth/refresh`.
 
 #### Logout -- Local + RP-Initiated
 
@@ -583,7 +551,6 @@ graph LR
     SIDX["bff:sid_index:{iss}:{idp_sid}<br/>SET of session_id"]
     LS["bff:login_state:{state}<br/>HASH (5 min TTL)"]
     LJTI["bff:logout_jti:{iss}:{jti}<br/>STRING — replay guard"]
-    RL["bff:refresh_lock:{sid}<br/>STRING — per-session NX lock"]
 
     USER --> IDX
     IDX --> S1
@@ -606,12 +573,10 @@ graph LR
 | `idp_iss` | String | OIDC issuer URL |
 | `idp_sub` | String | OIDC subject |
 | `idp_sid` | String | OIDC `sid` claim (for back-channel logout) |
-| `access_token` | String | Encrypted IdP access token |
-| `refresh_token` | String | Encrypted IdP refresh token |
-| `access_expires_at` | Int (epoch s) | When IdP access token expires |
+| `id_token` | String | OIDC `id_token` from initial exchange. Used as `id_token_hint` on RP-initiated logout. Not refreshed in v1; eventual staleness tolerated by most IdPs. |
 | `created_at` | Int (epoch s) | Session creation time |
-| `expires_at` | Int (epoch s) | Current session expiry; advanced by `/auth/refresh` |
-| `absolute_expires_at` | Int (epoch s) | Hard cap; cannot be extended past this |
+| `expires_at` | Int (epoch s) | Current session expiry; advanced by `/auth/refresh`. Mirror of the key's Redis TTL, kept here so `/auth/sessions` can list all active sessions and their expiries from one HMGET batch without an extra `EXPIRETIME` per key. |
+| `absolute_expires_at` | Int (epoch s) | Hard cap; cannot be extended past this. Enforced in `/auth/refresh` by `min(now + session_ttl, absolute_expires_at)`. |
 | `user_agent` | String | Captured at login |
 | `ip` | String | Captured at login |
 | `csrf_token` | String | CSRF token bound to this session |
@@ -632,7 +597,7 @@ graph LR
 - `ZRANGEBYSCORE bff:user_sessions:{uid} 0 <now>` returns expired ones (for the janitor).
 - `ZREMRANGEBYSCORE bff:user_sessions:{uid} 0 <now>` cleans them in one call.
 
-**Maintenance**: Mutated atomically with `bff:session:*` via Lua scripts.
+**Maintenance**: Mutated together with `bff:session:*` in a single MULTI/EXEC pipeline (create, refresh) or in a per-op atomicity model documented in §3.6 (revoke).
 
 #### Key: `bff:sid_index:{iss}:{idp_sid}`
 
@@ -649,14 +614,6 @@ graph LR
 **Fields**: `pkce_verifier`, `nonce`, `redirect_to`
 
 **TTL**: 5 minutes. One-shot -- deleted on callback.
-
-#### Key: `bff:refresh_lock:{session_id}`
-
-**Type**: Redis STRING (value: opaque request token).
-
-**Purpose**: Per-session NX lock that gates IdP token refresh during `/auth/refresh`. Prevents two parallel SPA refreshes from both calling the IdP refresh-token endpoint and racing the rotated `refresh_token`.
-
-**TTL**: `idp_refresh_timeout_seconds` (default `10`). Released early on success.
 
 #### Key: `bff:logout_jti:{iss}:{jti}`
 
@@ -737,7 +694,7 @@ flowchart LR
 | Session create / refresh / revoke | BFF | Owns the Lua scripts |
 | Cookie issue / clear | BFF | Router never sets cookies |
 | CSRF token issue | BFF | Router enforces nothing CSRF-related on `/api/*` (relies on `SameSite=Strict`) |
-| IdP access-token refresh | BFF | Triggered on `/auth/refresh` |
+| IdP access-token refresh | _(not in v1)_ | Tokens stored at login are not refreshed; v1 never calls IdP-protected APIs on the user's behalf. |
 | Gateway JWT mint + sign | Router | Reads claims from session via shared session manager |
 | JWKS publication | Router | Endpoint `/.well-known/jwks.json` |
 | Reverse proxy `/api/*` | Router | Forwards with `Authorization: Bearer <jwt>` |
@@ -818,14 +775,13 @@ Metrics (Prometheus):
 - `bff_auth_refresh_total{result}` -- ok / expired / past_cap / idp_fail
 - `bff_session_active` -- gauge from periodic Redis sample
 - `bff_session_lookup_duration_seconds` -- histogram
-- `bff_idp_refresh_total{result}` -- ok / fail
 - `bff_back_channel_logout_total{result}`
 - `bff_janitor_removed_total`
 - `bff_janitor_backlog_size`
 
 Logs (structured JSON): every auth event with `correlation_id`, `session_id` (hashed), `user_id`, `tenant_id`. Never log cookies, raw tokens, or refresh tokens.
 
-Audit (via Audit Service): login OK, login fail, refresh, logout, revoke (single / all / admin), back-channel logout, IdP refresh failure.
+Audit (via Audit Service): login OK, login fail, refresh, logout, revoke (single / all / admin), back-channel logout.
 
 ## 5. Design Decisions
 

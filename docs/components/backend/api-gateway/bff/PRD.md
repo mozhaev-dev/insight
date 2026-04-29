@@ -29,7 +29,6 @@ date: 2026-04-28
   - [5.6 Session Management](#56-session-management)
   - [5.7 Logout](#57-logout)
   - [5.8 CSRF Protection](#58-csrf-protection)
-  - [5.9 IdP Token Refresh (Internal)](#59-idp-token-refresh-internal)
 - [6. Non-Functional Requirements](#6-non-functional-requirements)
   - [6.1 NFR Inclusions](#61-nfr-inclusions)
   - [6.2 NFR Exclusions](#62-nfr-exclusions)
@@ -75,7 +74,7 @@ Moving the token to an `HttpOnly`, `Secure`, `SameSite=Strict` cookie alone is n
 
 | Term | Definition |
 |------|------------|
-| OIDC token | ID token + access token + refresh token issued by the customer's identity provider. Consumed by the BFF, never seen by the browser. |
+| OIDC token | Tokens issued by the customer's identity provider. The BFF stores only `id_token` (used as `id_token_hint` on RP-initiated logout); access and refresh tokens are received at login but not stored or used in v1. The browser never sees any of them. |
 | Session cookie | Opaque, random session ID set on the browser by the BFF. Short, hard TTL. No claims, no meaning outside Redis. |
 | Session record | Server-side object in Redis keyed by session ID. Holds user, tenant, IdP tokens, expiry. |
 | Session refresh | Explicit `POST /auth/refresh` call from the SPA that extends the session TTL. The session does **not** extend automatically on regular API calls. |
@@ -200,19 +199,19 @@ The cookie value **MUST** be opaque -- no claims, no JWT, no user-identifying da
 
 The system **MUST** expose `POST /auth/refresh`. When called with a valid session cookie, it **MUST**:
 
-1. Validate the session in Redis.
-2. Reject (401) if the session is unknown, expired, or past the absolute lifetime cap.
-3. Update the session record's `expires_at` to `now + session_ttl`.
-4. Update the user-index sorted-set score for this session to the new `expires_at`.
-5. Re-issue the session cookie with a fresh `Max-Age`.
-6. (Internal, transparent to SPA) refresh the IdP access token if it is near expiry; on IdP refresh failure, revoke the session and return 401.
-7. Return `200` with a JSON body containing `expires_at` (epoch seconds, absolute deadline) and `refresh_at` (epoch seconds, recommended next-refresh moment = `expires_at − safety_margin`). `safety_margin` is configurable, default 30 s.
+1. Reject (401) if the session is not present in Redis.
+2. Compute `new_exp = min(now + session_ttl, absolute_expires_at)`.
+3. Update the session record's `expires_at`, the key's Redis TTL, and the user-index sorted-set score to `new_exp`. These three updates **MUST** be applied as one atomic batch.
+4. Re-issue the session cookie with a fresh `Max-Age`.
+5. Return `200` with a JSON body containing `expires_at` (epoch seconds) and `refresh_at` (epoch seconds, recommended next-refresh moment = `expires_at − safety_margin`). `safety_margin` is configurable, default 30 s.
 
 The system **MUST NOT** extend the session on any other endpoint or proxied API call. Regular `/api/*` traffic does not slide the TTL.
 
+The system **MUST NOT** call the IdP refresh-token endpoint as part of `/auth/refresh`. v1 does not store or use IdP access/refresh tokens after login. Hard-cap behaviour is delegated to the Redis TTL: once `expires_at` reaches `absolute_expires_at`, the next `EXPIREAT` either keeps the key alive briefly or evicts it; the user is then forced to log in again.
+
 The SPA uses `refresh_at` to schedule its next call. `GET /auth/me` **MUST** return the same two fields so the SPA can prime its timer at page load.
 
-**Rationale**: Explicit refresh keeps idle sessions short-lived without sliding-TTL machinery on the hot path. Returning `refresh_at` lets the operator tune `session_ttl` without an SPA change.
+**Rationale**: Explicit refresh keeps idle sessions short-lived without sliding-TTL machinery on the hot path. Returning `refresh_at` lets the operator tune `session_ttl` without an SPA change. Decoupling from the IdP keeps `/auth/refresh` fast and resilient to IdP outages.
 
 **Actors**: `cpt-insightspec-actor-browser-user`
 
@@ -331,20 +330,6 @@ For state-changing methods (POST, PUT, PATCH, DELETE) on `/auth/*`, the system *
 
 **Actors**: `cpt-insightspec-actor-browser-user`
 
-### 5.9 IdP Token Refresh (Internal)
-
-#### IdP Access Token Refresh
-
-- [ ] `p1` - **ID**: `cpt-insightspec-fr-bff-idp-refresh`
-
-When the IdP access token stored in the session is near expiry, the system **MUST** refresh it using the stored refresh token. On refresh failure, the system **MUST** revoke the session and force the user to log in again.
-
-This is **internal**, not visible to the SPA. It is distinct from session refresh (5.3) which is a browser-initiated, user-visible TTL extension. IdP refresh is only triggered when the BFF needs a valid IdP access token (e.g. on `/auth/refresh`, on logout to call RP-initiated logout, or if a future feature calls IdP-protected APIs on the user's behalf).
-
-**Rationale**: The browser does not handle IdP tokens. Failed refresh means the IdP no longer trusts this user, so the session goes too.
-
-**Actors**: `cpt-insightspec-actor-oidc-provider`
-
 ## 6. Non-Functional Requirements
 
 ### 6.1 NFR Inclusions
@@ -393,7 +378,7 @@ Every session cookie response **MUST** include `__Host-` prefix, `HttpOnly`, `Se
 
 - [ ] `p1` - **ID**: `cpt-insightspec-nfr-bff-audit`
 
-Every login, logout, session refresh, IdP token refresh failure, session revocation, and back-channel logout **MUST** emit an audit event consumed by the Audit Service (see parent PRD `cpt-insightspec-fr-be-audit-trail`).
+Every login, logout, session refresh, session revocation, and back-channel logout **MUST** emit an audit event consumed by the Audit Service (see parent PRD `cpt-insightspec-fr-be-audit-trail`).
 
 **Threshold**: 100% coverage of auth events.
 
@@ -511,18 +496,16 @@ JWKS publication and `/api/*` reverse proxy live on the [Router](../router/PRD.m
 
 **Main Flow**:
 1. SPA calls `POST /auth/refresh`. The cadence is driven by the `refresh_at` value the SPA received in the previous response.
-2. BFF reads the cookie, fetches `bff:session:{id}`.
+2. BFF reads the cookie, fetches `bff:session:{id}` (HMGET).
 3. BFF computes `new_expires_at = min(now + session_ttl, absolute_expires_at)`.
-4. BFF runs a Lua script that updates `bff:session:{id}` and `ZADD bff:user_sessions:{user_id} new_expires_at sid` atomically.
-5. (If IdP access token is near expiry) BFF refreshes it via the IdP refresh token.
-6. BFF re-issues the cookie with `Max-Age = new_expires_at − now` and returns `200` with body `{expires_at: new_expires_at, refresh_at: new_expires_at − safety_margin}`.
+4. BFF runs a single MULTI/EXEC pipeline that updates the `expires_at` HASH field, the key TTL via `EXPIREAT`, and the ZSET score in `bff:user_sessions:{user_id}` to `new_expires_at`.
+5. BFF re-issues the cookie with `Max-Age = new_expires_at − now` and returns `200` with body `{expires_at: new_expires_at, refresh_at: new_expires_at − safety_margin}`.
 
-**Postconditions**: Session lives for another TTL window. ZSET score updated. SPA has the next `refresh_at` to schedule from.
+**Postconditions**: Session lives for another TTL window. ZSET score and key TTL aligned. SPA has the next `refresh_at` to schedule from.
 
 **Alternative Flows**:
-- **Session unknown or expired**: 401, cookie cleared.
-- **Past absolute cap**: 401, session revoked.
-- **IdP refresh fails**: session revoked, 401.
+- **Session unknown**: 401, cookie cleared. (Includes the case where Redis evicted the key on hitting `absolute_expires_at`.)
+- **Past absolute cap (rare race)**: `EXPIREAT` with a past timestamp evicts the key; the SPA's next request returns 401.
 
 #### Log Out Everywhere
 

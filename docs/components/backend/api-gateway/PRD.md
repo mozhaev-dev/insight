@@ -10,6 +10,8 @@ date: 2026-04-28
 - [1. Overview](#1-overview)
 - [2. Composition](#2-composition)
 - [3. Scope](#3-scope)
+  - [3.1 In Scope](#31-in-scope)
+  - [3.2 Out of Scope](#32-out-of-scope)
 - [4. Shared Non-Functional Requirements](#4-shared-non-functional-requirements)
 - [5. Public Surface](#5-public-surface)
 - [6. Dependencies](#6-dependencies)
@@ -30,7 +32,7 @@ This umbrella PRD describes only what is shared across the two modules. Each mod
 
 | Module | Path | Owns |
 |---|---|---|
-| BFF | [bff/](./bff/) | OIDC handshake, session lifecycle, session cookie, `/auth/*` API, CSRF, IdP token refresh, audit |
+| BFF | [bff/](./bff/) | OIDC handshake, session lifecycle, session cookie, `/auth/*` API, CSRF, audit |
 | Router | [router/](./router/) | Cookie validation (read-only), gateway JWT mint + cache, JWKS publication, route table, reverse proxy `/api/*`, header rewriting, hot config reload |
 
 ```mermaid
