@@ -50,6 +50,10 @@ SELECT
     toUInt32(coalesce(chatRequests, 0) + coalesce(composerRequests, 0))
                                                     AS chat_requests,
     CAST(NULL AS Nullable(UInt32))                  AS cost_cents,
+    -- CE-specific columns — NULL for Cursor (Cursor does not expose git-level attribution)
+    CAST(NULL AS Nullable(UInt32))                  AS commits_count,
+    CAST(NULL AS Nullable(UInt32))                  AS pull_requests_count,
+    CAST(NULL AS Nullable(String))                  AS tool_action_breakdown_json,
     'cursor'                                        AS source,
     'insight_cursor'                                AS data_source,
     CAST(_airbyte_extracted_at AS Nullable(DateTime64(3))) AS collected_at

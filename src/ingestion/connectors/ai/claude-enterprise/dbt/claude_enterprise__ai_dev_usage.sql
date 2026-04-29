@@ -71,6 +71,12 @@ SELECT
     CAST(NULL AS Nullable(UInt32))                                     AS chat_requests,
     -- Cost is not surfaced per-user in Enterprise; tied to org subscription, not consumption.
     CAST(NULL AS Nullable(UInt32))                                     AS cost_cents,
+    -- Enterprise exposes commit and PR counts per user per day via core_metrics.
+    toUInt32(coalesce(code_commit_count, 0))                           AS commits_count,
+    toUInt32(coalesce(code_pull_request_count, 0))                     AS pull_requests_count,
+    -- Full tool-action breakdown (edit/write/multi_edit/notebook_edit accepted+rejected).
+    -- Stored as-is from Bronze for downstream analytics without re-aggregation.
+    claude_code_metrics_json                                           AS tool_action_breakdown_json,
     'claude_enterprise'                                                AS source,
     'insight_claude_enterprise'                                        AS data_source,
     parseDateTime64BestEffortOrNull(coalesce(collected_at, ''), 3)     AS collected_at

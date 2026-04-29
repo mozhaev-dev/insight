@@ -10,7 +10,7 @@
 -- treating api_key_id as an identity key — when the organisation provisions
 -- one API key per developer (common practice), api_key_id → person_id is a
 -- clean 1:1 mapping. Fallback per-user attribution via Enterprise engagement
--- (claude_enterprise_users.chat_*) in claude_enterprise__ai_api_usage.
+-- (claude_enterprise_users.chat_*) in claude_enterprise__ai_assistant_usage.
 --
 -- channel = 'api' for all rows produced here.
 --
@@ -18,8 +18,8 @@
 -- (stream disabled at the connection level, e.g. to work around an ongoing
 -- rate-limit issue at the Anthropic Admin API layer, or a fresh deploy before
 -- the first sync), emit an empty structurally-typed relation instead of
--- failing the run. downstream class_ai_api_usage keeps its other
--- contributions (claude_enterprise web/office/cowork branches) intact.
+-- failing the run. Downstream class_ai_api_usage still compiles correctly
+-- (Admin is currently the sole contributor to this Silver class).
 {{ config(
     materialized='incremental',
     unique_key='unique_key',
@@ -43,8 +43,6 @@ SELECT
     CAST(NULL AS Nullable(Date))                    AS day,
     CAST('anthropic' AS String)                     AS provider,
     CAST('api' AS String)                           AS channel,
-    CAST(NULL AS Nullable(UInt32))                  AS conversation_count,
-    CAST(NULL AS Nullable(UInt32))                  AS message_count,
     CAST(NULL AS Nullable(UInt64))                  AS input_tokens,
     CAST(NULL AS Nullable(UInt64))                  AS output_tokens,
     CAST(NULL AS Nullable(UInt64))                  AS cache_read_tokens,
@@ -81,8 +79,6 @@ SELECT
     toDate(date)                                    AS day,
     'anthropic'                                     AS provider,
     'api'                                           AS channel,
-    CAST(NULL AS Nullable(UInt32))                  AS conversation_count,
-    CAST(NULL AS Nullable(UInt32))                  AS message_count,
     toUInt64(coalesce(uncached_input_tokens, 0)
            + coalesce(cache_read_tokens, 0)
            + coalesce(cache_creation_5m_tokens, 0)
