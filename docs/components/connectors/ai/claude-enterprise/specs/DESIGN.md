@@ -40,7 +40,7 @@
 
 ### 1.1 Architectural Vision
 
-The Claude Enterprise connector extracts per-user daily activity, organization-wide summaries, chat project usage, and skill/connector adoption from five Anthropic Enterprise Analytics API endpoints and delivers them to the Bronze layer of the Insight platform. The connector is implemented as an Airbyte declarative manifest — a YAML file that defines all streams, authentication, pagination, incremental sync, and schemas without code. Silver and Gold transformations are out of scope for this connector iteration.
+The Claude Enterprise connector extracts per-user daily activity, organization-wide summaries, chat project usage, and skill/connector adoption from five Anthropic Enterprise Analytics API endpoints and delivers them to the Bronze layer of the Insight platform. The connector is implemented as an Airbyte declarative manifest — a YAML file that defines all streams, authentication, pagination, incremental sync, and schemas without code. Silver staging is in scope: two dbt models (`claude_enterprise__ai_dev_usage`, `claude_enterprise__ai_assistant_usage`) transform Bronze into `class_ai_dev_usage` and `class_ai_assistant_usage`. Gold transformations are out of scope for this connector iteration.
 
 The connector defines five data streams:
 
@@ -63,14 +63,14 @@ graph LR
     Airbyte["Airbyte Platform<br/>orchestration, state, scheduling"]
     Dest["Destination Connector<br/>ClickHouse / PostgreSQL"]
     Bronze["Bronze Layer<br/>6 tables: users, summaries,<br/>chat_projects, skills,<br/>connectors, collection_runs"]
-    Silver["Silver Layer (out of scope)<br/>Identity Manager → person_id"]
+    Silver["Silver Layer<br/>class_ai_dev_usage<br/>class_ai_assistant_usage"]
 
     AnthropicAPI -->|"REST/JSON<br/>x-api-key auth<br/>read:analytics scope"| SrcContainer
     SrcContainer -->|"RECORD messages"| Dest
     SrcContainer -->|"STATE messages"| Airbyte
     Airbyte -->|"triggers sync"| SrcContainer
     Dest -->|"writes"| Bronze
-    Bronze -.->|"future"| Silver
+    Bronze -->|"dbt staging models"| Silver
 ```
 
 ### 1.2 Architecture Drivers
@@ -310,7 +310,7 @@ The manifest uses Airbyte declarative framework v7.0.4. Key structural patterns 
 
 ##### Responsibility boundaries
 
-Orchestration, scheduling, and state storage are handled by the Airbyte platform. Silver/Gold transformations, destination-specific configuration, and mock/stub services are out of scope.
+Orchestration, scheduling, and state storage are handled by the Airbyte platform. Silver staging (two dbt models in `dbt/`) is in scope; Gold transformations, destination-specific configuration, and mock/stub services are out of scope.
 
 ##### Related components (by ID)
 
@@ -669,7 +669,7 @@ The Claude Enterprise connector uses one manifest and one Airbyte connection (da
 ```text
 Package: src/ingestion/connectors/ai/claude-enterprise/
 +-- connector.yaml (declarative manifest — 6 streams)
-+-- descriptor.yaml (package metadata — dbt_select: "", Bronze-only)
++-- descriptor.yaml (package metadata — dbt_select: "tag:claude-enterprise+")
 
 Connection: claude-enterprise-{org_name}-daily
 +-- Schedule: daily (via orchestrator cron)

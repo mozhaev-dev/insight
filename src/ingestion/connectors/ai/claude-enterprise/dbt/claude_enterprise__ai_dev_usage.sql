@@ -25,11 +25,11 @@
 --     grain. No SUM/argMax wrapping needed.
 --   • Filter: code_session_count > 0 OR code_lines_added > 0
 --                                       OR code_tool_accepted_count > 0
---     drop rows where the user had Enterprise activity but no Code activity
---     that day (avoids polluting class_ai_dev_usage with empty Code rows).
---     The third condition catches tool-only days where the user accepted
---     Edit/Write/MultiEdit/NotebookEdit tool calls without a session/lines
---     event being attributed.
+--                                       OR code_commit_count > 0
+--                                       OR code_pull_request_count > 0
+--     Drop rows with no Code activity that day. The commit/PR conditions catch
+--     days where Anthropic registers a git event without a session counter
+--     (edge case observed in real Enterprise data).
 
 {{ config(
     materialized='incremental',
@@ -86,7 +86,9 @@ WHERE user_email IS NOT NULL
   AND date IS NOT NULL
   AND (coalesce(code_session_count, 0) > 0
        OR coalesce(code_lines_added, 0) > 0
-       OR coalesce(code_tool_accepted_count, 0) > 0)
+       OR coalesce(code_tool_accepted_count, 0) > 0
+       OR coalesce(code_commit_count, 0) > 0
+       OR coalesce(code_pull_request_count, 0) > 0)
 {% if is_incremental() %}
   AND toDate(parseDateTimeBestEffortOrNull(date)) > (
       SELECT coalesce(max(day), toDate('1970-01-01')) - INTERVAL 3 DAY

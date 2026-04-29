@@ -140,6 +140,8 @@ office AS (
     FROM base
     WHERE coalesce(excel_session_count, 0) > 0
        OR coalesce(powerpoint_session_count, 0) > 0
+       OR coalesce(excel_message_count, 0) > 0
+       OR coalesce(powerpoint_message_count, 0) > 0
 ),
 
 -- ── surface = 'cowork' ─────────────────────────────────────────────────────
