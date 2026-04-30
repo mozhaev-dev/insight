@@ -737,16 +737,21 @@ Per the cross-vendor source-resolution rule, Enterprise is the canonical Code fe
 
 Filter: emit row only when `code_session_count > 0 OR code_lines_added > 0 OR code_tool_accepted_count > 0`.
 
-#### `claude_enterprise__ai_assistant_usage` → `class_ai_assistant_usage` (`surface ∈ {chat, office, cowork, cross}`)
+#### `claude_enterprise__ai_assistant_usage` → `class_ai_assistant_usage` (`tool='claude'`, `surface ∈ {chat, excel, powerpoint, cowork, cross}`)
 
-One Bronze row per `(date, user_email)` produces up to four staging rows — one per non-empty surface.
+All rows carry `tool='claude'` (vendor discriminator on the Silver class). Future providers — OpenAI Compliance API for ChatGPT, Google for Gemini — will write to the same Silver class with `tool='chatgpt'` / `'gemini'`.
+
+One Bronze row per `(date, user_email)` produces up to five staging rows — one per non-empty surface.
 
 | Surface | Filter (any > 0 emits a row) | Primary fields populated |
 |---|---|---|
 | `chat` | `chat_conversation_count`, `chat_message_count`, `chat_files_uploaded_count`, `chat_artifacts_created_count`, `chat_projects_created_count`, `chat_projects_used_count`, `chat_skills_used_count`, `chat_connectors_used_count`, `chat_thinking_message_count` | `conversation_count`, `message_count`, `files_uploaded_count`, `artifacts_created_count`, `projects_*`, `skills_used_count`, `connectors_used_count`, `thinking_message_count`, `surface_metrics_json` |
-| `office` | `excel_session_count`, `powerpoint_session_count` | `session_count` (excel + powerpoint), `message_count` (excel + powerpoint), `surface_metrics_json` |
+| `excel` | `excel_session_count`, `excel_message_count` | `session_count`, `message_count`, `surface_metrics_json` (full office_metrics_json) |
+| `powerpoint` | `powerpoint_session_count`, `powerpoint_message_count` | `session_count`, `message_count`, `surface_metrics_json` (full office_metrics_json) |
 | `cowork` | `cowork_session_count`, `cowork_message_count`, `cowork_action_count`, `cowork_dispatch_turn_count`, `cowork_skills_used_count` | `session_count`, `message_count`, `action_count`, `dispatch_turn_count`, `skills_used_count`, `surface_metrics_json` |
 | `cross` | `web_search_count` | `search_count` only (all other counters NULL, `surface_metrics_json` NULL) |
+
+`cost_cents` is always NULL for Enterprise — cost is org-level subscription, not per-user / per-surface. Column is reserved on the Silver schema for future providers that surface assistant cost per user.
 
 `web_search_count` is routed to a dedicated `surface='cross'` row rather than attached to `chat`. Web search is not session-bound to any single surface; emitting it standalone keeps surface-specific schemas clean and lets gold consumers attribute search activity without picking arbitrary buckets.
 

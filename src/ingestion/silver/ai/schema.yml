@@ -262,21 +262,33 @@ models:
         description: "Calendar date of usage (UTC)"
         tests:
           - not_null
-      - name: surface
+      - name: tool
         description: >
-          Surface discriminator. 'chat' = Claude.ai chat; 'office' = Excel /
-          PowerPoint integrations; 'cowork' = Claude Cowork; 'cross' =
-          surface-agnostic counters (currently only web_search) — emitted as
-          a separate row to avoid attributing them to any single surface.
+          AI assistant vendor discriminator. 'claude' for Claude Enterprise
+          surfaces (chat / cowork / excel / powerpoint / cross). Future:
+          'chatgpt' (OpenAI Compliance API), 'gemini'.
         tests:
           - not_null
           - accepted_values:
               arguments:
-                values: ['chat', 'office', 'cowork', 'cross']
+                values: ['claude', 'chatgpt', 'gemini']
+      - name: surface
+        description: >
+          Per-vendor surface discriminator. For tool='claude': 'chat' = Claude.ai
+          chat; 'excel' / 'powerpoint' = Office integrations; 'cowork' = Claude
+          Cowork; 'cross' = surface-agnostic counters (currently only web_search) —
+          emitted as a separate row to avoid attributing them to any single
+          surface.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['chat', 'excel', 'powerpoint', 'cowork', 'cross']
       - name: session_count
         description: >
           Number of distinct sessions on the surface.
-          office → excel_session_count + powerpoint_session_count.
+          excel → excel_session_count.
+          powerpoint → powerpoint_session_count.
           cowork → cowork_session_count.
           chat → NULL (Claude.ai chat is not session-bounded in the API).
           cross → NULL.
@@ -284,19 +296,20 @@ models:
         description: >
           Number of distinct conversations.
           chat → chat_conversation_count.
-          office, cowork, cross → NULL (these surfaces don't have a 'conversation' concept).
+          excel / powerpoint / cowork / cross → NULL.
       - name: message_count
         description: >
           Total messages on the surface.
           chat → chat_message_count.
-          office → excel_message_count + powerpoint_message_count.
+          excel → excel_message_count.
+          powerpoint → powerpoint_message_count.
           cowork → cowork_message_count.
           cross → NULL.
       - name: action_count
         description: >
           Discrete actions performed on the surface (writes / edits / tool calls).
           cowork → cowork_action_count.
-          chat, office, cross → NULL (no action counter exposed).
+          chat, excel, powerpoint, cross → NULL (no action counter exposed).
       - name: files_uploaded_count
         description: "chat → chat_files_uploaded_count. NULL for other surfaces."
       - name: artifacts_created_count
@@ -309,7 +322,7 @@ models:
         description: >
           chat → chat_skills_used_count.
           cowork → cowork_skills_used_count.
-          office, cross → NULL.
+          excel, powerpoint, cross → NULL.
       - name: connectors_used_count
         description: "chat → chat_connectors_used_count. NULL for other surfaces."
       - name: thinking_message_count
@@ -320,7 +333,13 @@ models:
         description: >
           Web searches initiated by the user. Always emitted on a row with
           surface='cross' — web_search is cross-surface (not attributable to
-          a single chat / office / cowork session). NULL for non-cross surfaces.
+          a single chat / excel / powerpoint / cowork session). NULL for
+          non-cross surfaces.
+      - name: cost_cents
+        description: >
+          Monetary cost in cents when available. NULL for Claude Enterprise
+          (cost is org-level subscription, not per-user / per-surface).
+          Reserved for future providers that surface assistant cost per-user.
       - name: surface_metrics_json
         description: >
           Raw JSON blob for the surface (chat_metrics_json / office_metrics_json /

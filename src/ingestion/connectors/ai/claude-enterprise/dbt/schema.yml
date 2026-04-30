@@ -95,11 +95,12 @@ models:
   - name: claude_enterprise__ai_assistant_usage
     description: >
       Bronze → Silver step 1: Claude Enterprise per-user assistant surface activity.
-      Feeds class_ai_assistant_usage with surfaces 'chat' (Claude.ai chat),
-      'office' (Excel / PowerPoint), 'cowork' (Claude Cowork), and 'cross'
-      (web_search — surface-agnostic counter, emitted as its own row per
-      gist Q2 resolution). One Bronze row per (date, user_email) can produce
-      up to 4 staging rows — one per non-empty surface.
+      Feeds class_ai_assistant_usage with tool='claude' and surfaces 'chat'
+      (Claude.ai chat), 'excel' / 'powerpoint' (Office integrations), 'cowork'
+      (Claude Cowork), and 'cross' (web_search — surface-agnostic counter,
+      emitted as its own row per gist Q2 resolution). One Bronze row per
+      (date, user_email) can produce up to 5 staging rows — one per non-empty
+      surface.
 
       Replaces the deprecated claude_enterprise__ai_api_usage model, which
       incorrectly routed engagement data to class_ai_api_usage. Enterprise
@@ -122,32 +123,41 @@ models:
       - name: day
         tests:
           - not_null
-      - name: surface
-        description: "chat | office | cowork | cross"
+      - name: tool
+        description: "Always 'claude' for Claude Enterprise"
         tests:
           - not_null
           - accepted_values:
               arguments:
-                values: ['chat', 'office', 'cowork', 'cross']
+                values: ['claude']
+      - name: surface
+        description: "chat | excel | powerpoint | cowork | cross"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['chat', 'excel', 'powerpoint', 'cowork', 'cross']
       - name: session_count
         description: >
-          office → excel_session_count + powerpoint_session_count.
+          excel → excel_session_count.
+          powerpoint → powerpoint_session_count.
           cowork → cowork_session_count.
           chat, cross → NULL.
       - name: conversation_count
         description: >
           chat → chat_conversation_count.
-          office, cowork, cross → NULL.
+          excel, powerpoint, cowork, cross → NULL.
       - name: message_count
         description: >
           chat → chat_message_count.
-          office → excel_message_count + powerpoint_message_count.
+          excel → excel_message_count.
+          powerpoint → powerpoint_message_count.
           cowork → cowork_message_count.
           cross → NULL.
       - name: action_count
         description: >
           cowork → cowork_action_count.
-          chat, office, cross → NULL.
+          chat, excel, powerpoint, cross → NULL.
       - name: files_uploaded_count
         description: "chat → chat_files_uploaded_count. NULL for other surfaces."
       - name: artifacts_created_count
@@ -160,7 +170,7 @@ models:
         description: >
           chat → chat_skills_used_count.
           cowork → cowork_skills_used_count.
-          office, cross → NULL.
+          excel, powerpoint, cross → NULL.
       - name: connectors_used_count
         description: "chat → chat_connectors_used_count. NULL for other surfaces."
       - name: thinking_message_count
@@ -170,11 +180,15 @@ models:
       - name: search_count
         description: >
           cross → web_search_count.
-          chat, office, cowork → NULL.
+          chat, excel, powerpoint, cowork → NULL.
+      - name: cost_cents
+        description: "Always NULL — Enterprise cost is org-level, not per-user."
       - name: surface_metrics_json
         description: >
-          Raw JSON for the surface (chat / office / cowork metrics from Bronze).
-          NULL for cross.
+          Raw JSON for the surface.
+          chat → chat_metrics_json. excel / powerpoint → office_metrics_json
+          (full structure with both products). cowork → cowork_metrics_json.
+          cross → NULL.
       - name: source
         tests:
           - not_null
