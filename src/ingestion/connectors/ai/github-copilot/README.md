@@ -94,12 +94,12 @@ For each day requested, the metrics streams:
 
 ## Silver Targets
 
-Two Silver staging models are defined for this connector under the `tag:github-copilot` dbt selector:
+Two Silver staging models are defined for this connector under the `tag:github-copilot` dbt selector. Both follow the project-wide ADR-0001 pattern (`engine='ReplacingMergeTree(_version)'`, `order_by=['unique_key']`, `incremental_strategy='append'`, `_version` column projected from `_airbyte_extracted_at`).
 
-- `copilot__ai_dev_usage` — **active**. Feeds `class_ai_dev_usage` (per-user daily code acceptance, lines added, feature engagement alongside Cursor/Claude Code/Windsurf). Source: `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email`.
-- `copilot__ai_org_usage` — **deferred**. Tagged `tag:github-copilot` but includes `{{ config(enabled=false) }}`, so `dbt_select: tag:github-copilot+` does **not** execute it. Will be activated (by removing `enabled=false`) in a separate PR alongside the `class_ai_org_usage` Silver view creation.
+- `copilot__ai_dev_usage` — **conditional on Silver schema extension**. Feeds the existing `class_ai_dev_usage` class with `tool='copilot'`, `source='copilot'`. Activation requires three boolean columns (`used_chat_today`, `used_agent_today`, `used_cli_today`) added to `silver/ai/schema.yml` and `'copilot'` added to the `tool`/`source` enum `accepted_values`. Existing Cursor / Claude Enterprise rows will keep the new columns NULL via `on_schema_change='append_new_columns'`. Source: `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email`.
+- `copilot__ai_org_usage` — **deferred**. Tagged `tag:github-copilot, silver:class_ai_org_usage` but includes `{{ config(enabled=false) }}`. The `class_ai_org_usage` Silver class **does not yet exist** — Copilot is its first contributor. The class definition (RMT(_version), ORDER BY unique_key per ADR-0001) and the staging activation (removing `enabled=false`) ship together in a future PR.
 
-Silver-level `silver:class_*` tags will be added in a separate PR alongside the Silver framework changes.
+**Bronze deduplication note (ADR-0002)**: Bronze tables here are plain `MergeTree` (Airbyte default). The project-wide pattern is to promote them to `ReplacingMergeTree(_airbyte_extracted_at)` via a `<connector>__bronze_promoted` model. This connector defers that step — the upstream `promote_bronze_to_rmt` macro currently fails on `Nullable(String)` `unique_key` columns (missing `SETTINGS allow_nullable_key=1` in its CTAS — affects Jira and Claude Enterprise too). Until the macro is patched, both staging models wrap their Bronze read with `LIMIT 1 BY tenant_id, source_id, <natural_key>` to drop Airbyte re-emit duplicates locally.
 
 ## Operational Constraints
 

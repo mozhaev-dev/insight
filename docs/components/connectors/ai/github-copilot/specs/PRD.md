@@ -87,8 +87,10 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 | Signed URL | Pre-authenticated HTTPS URL returned by the metrics endpoint, hosted on `copilot-reports.github.com`. The connector downloads NDJSON data from this URL without an `Authorization` header; URLs expire shortly after issuance. |
 | NDJSON | Newline-delimited JSON — response format from signed download URLs. Each line is a separate JSON object; the entire payload is not valid JSON. |
 | Seat | An assigned Copilot subscription slot for a specific GitHub user. Identified by `user_login` and `user_email`. |
-| `class_ai_dev_usage` | Silver unified stream for per-developer AI tool daily usage (Cursor, Claude Code, GitHub Copilot, Windsurf). |
-| `class_ai_org_usage` | Silver unified stream for org-level AI tool aggregates. Planned — does not yet exist in the codebase. |
+| `class_ai_dev_usage` | Silver unified class for per-developer AI tool daily usage. **Already exists** in `silver/ai/class_ai_dev_usage.sql` (RMT(_version) per ADR-0001), currently fed by Cursor and Claude Enterprise. Adding Copilot is a strict additive operation — extend `silver/ai/schema.yml` with three boolean columns and two enum values, then activate the staging model. |
+| `class_ai_org_usage` | Silver unified class for org-level AI tool aggregates. **Does not yet exist** — Copilot would be its first contributor. Will be created together with the activation of `copilot__ai_org_usage` staging, following the same ADR-0001 pattern as `class_ai_dev_usage`. |
+| `class_ai_assistant_usage` | Silver class for human ↔ AI-assistant interaction (chat / cowork / office for Claude Enterprise). **Out of scope for Copilot** — Copilot is an IDE tool, not an assistant surface. |
+| `class_ai_api_usage` | Silver class for programmatic API token usage (Anthropic Admin / future OpenAI). **Out of scope for Copilot** — Copilot does not expose token-level metering. |
 | `data_source` | Discriminator field set to `insight_github_copilot` in all Bronze rows emitted by this connector. |
 | `person_id` | Canonical cross-system person identifier resolved by the Identity Manager in Silver step 2. |
 
@@ -176,8 +178,8 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 - Two-step metrics fetch: envelope request to GitHub API → NDJSON download from signed URL
 - Identity resolution via `copilot_user_metrics.user_login` → `user_email` through Silver join with `copilot_seats.user_login`
 - Bronze-layer table schemas for all 3 data streams
-- Silver staging model `copilot__ai_dev_usage` → `class_ai_dev_usage`
-- Silver staging model `copilot__ai_org_usage` (deferred — `class_ai_org_usage` Silver view does not yet exist; model tagged for future activation)
+- Silver staging model `copilot__ai_dev_usage` → existing `class_ai_dev_usage` class. Activation requires extending the Silver schema with three new boolean columns (`used_chat_today`, `used_agent_today`, `used_cli_today`) and two enum values (`tool='copilot'`, `source='copilot'`); existing Cursor and Claude Enterprise rows will leave the new columns NULL via `ALTER TABLE ADD COLUMN` (`on_schema_change='append_new_columns'`).
+- Silver staging model `copilot__ai_org_usage` (deferred — `class_ai_org_usage` Silver class does not yet exist; Copilot is its first contributor. Class will be created in the same activation PR per ADR-0001).
 
 ### 4.2 Out of Scope
 
@@ -188,8 +190,8 @@ The GitHub Copilot Metrics API introduced per-user daily data at granularity tha
 - IDE-level editor breakdown per user (not available from the new per-user metrics API)
 - Language-level code acceptance breakdown (not available from the new per-user metrics API)
 - Real-time or sub-daily granularity — the reports API provides daily aggregates only
-- `class_ai_org_usage` Silver view creation — tracked separately; this connector defines the staging model
-- Class-level Silver tags (`silver:class_ai_dev_usage`, `silver:class_ai_org_usage`) — to be added alongside Silver framework changes
+- `class_ai_org_usage` Silver class creation — Copilot would be its first contributor; the class definition is bundled with this connector's `org_usage` staging activation in a future PR
+- `class_ai_assistant_usage` and `class_ai_api_usage` — Copilot is an IDE tool, not an assistant or API-tier source; explicitly **not** routed there
 
 ## 5. Functional Requirements
 
@@ -514,7 +516,7 @@ Bronze table schemas **MUST** remain stable across connector versions. Additive 
 | Identity Manager | Resolves `user_email` to `person_id` in Silver step 2 | `p2` |
 | Destination store (ClickHouse / PostgreSQL) | Target for Bronze tables | `p1` |
 | dbt (Silver transformation runtime) | Executes `copilot__ai_dev_usage` and `copilot__ai_org_usage` staging models | `p2` |
-| `class_ai_org_usage` Silver view | Required for `copilot__ai_org_usage` to be queryable; does not yet exist — deferred to Phase 2 | `p2` |
+| `class_ai_org_usage` Silver class | Required for `copilot__ai_org_usage` to be queryable; class does not yet exist — created in the activation PR following ADR-0001 (RMT(_version), ORDER BY unique_key) | `p2` |
 
 ## 11. Assumptions
 
@@ -537,14 +539,14 @@ Bronze table schemas **MUST** remain stable across connector versions. Additive 
 | `download_links` array structure not fully documented | Connector processes only first URL if array handling is incomplete, silently missing data for large orgs | Implement iteration over all `download_links` items; log item count at debug level for observability |
 | `user_email` NULL for users without a verified email in GitHub account | Silver join cannot resolve identity; row excluded from `class_ai_dev_usage` | Accept as upstream limitation; document in Silver model; seat roster NULL rate is a known metric |
 | GitHub API schema change — NDJSON field added or removed | Bronze schema drifts from API reality | Accept new fields (non-breaking); monitor GitHub API changelog for removals; `additionalProperties: true` in schema |
-| `class_ai_org_usage` Silver view creation delay | `copilot__ai_org_usage` staging model produces Bronze data that cannot be queried at Silver level until the view exists | Tag model as `silver:class_ai_org_usage`; deferred activation is documented in §4.2; org metrics data is preserved in Bronze |
+| `class_ai_org_usage` Silver class creation delay | `copilot__ai_org_usage` staging produces Bronze data that cannot reach Silver until the class is created | Staging tagged `silver:class_ai_org_usage` with `enabled=false`; deferred activation documented in §4.2; org-metrics Bronze remains queryable directly |
 
 ## 13. Open Questions
 
 | ID | Summary | Owner | Target |
 |----|---------|-------|--------|
 | OQ-COP-1 | `login` → `user_email` join edge case: if a user appears in `copilot_user_metrics` but their seat was removed before the run completes, the Silver join produces NULL `user_email`. Should such rows be dropped in Silver or retained as unresolved pending next full-refresh cycle? | Data Architecture | Q3 2026 |
-| OQ-COP-2 | `class_ai_org_usage` Silver view creation — when should the unified Silver view be created and which other connectors will feed it alongside GitHub Copilot? Impacts deferred `copilot__ai_org_usage` activation. | Data Architecture | Q3 2026 |
+| OQ-COP-2 | `class_ai_org_usage` Silver class creation — Copilot would be its first contributor. When does the class get defined (using the same ADR-0001 RMT(_version) pattern as `class_ai_dev_usage`), and which other connectors might join (Cursor org-level rollups, Claude Enterprise summaries)? Impacts deferred `copilot__ai_org_usage` activation. | Data Architecture | Q3 2026 |
 | OQ-COP-3 | `download_links` array size — GitHub documentation does not specify the maximum number of signed URLs per envelope. Is the array always length 1, or can it be sharded for large organizations? Impacts idempotency and fetch complexity. | Connector Team | Q2 2026 |
 
 ## 14. Non-Applicable Requirements

@@ -43,10 +43,10 @@ One `AbstractSource` (`SourceGitHubCopilot`) exposes three streams:
 - `copilot_user_metrics` — incremental per-user daily usage via the two-step signed URL fetch
 - `copilot_org_metrics` — incremental org-level daily aggregates via the same two-step pattern
 
-Two dbt Silver models are defined alongside the connector:
+Two dbt Silver models are defined alongside the connector. Both follow the project-wide ADR-0001 staging pattern (`engine='ReplacingMergeTree(_version)'`, `order_by=['unique_key']`, `incremental_strategy='append'`, `_version` column projected from `_airbyte_extracted_at`).
 
-- `copilot__ai_dev_usage` — Bronze `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email` → `class_ai_dev_usage`
-- `copilot__ai_org_usage` — Bronze `copilot_org_metrics` → `class_ai_org_usage` (**deferred** — Silver view does not yet exist; model tagged for future activation)
+- `copilot__ai_dev_usage` — Bronze `copilot_user_metrics` joined with `copilot_seats` to resolve `user_login` → `user_email`. Feeds the existing `class_ai_dev_usage` Silver class with `tool='copilot'`, `source='copilot'`. Activation requires extending `silver/ai/schema.yml` with three boolean columns (`used_chat_today`, `used_agent_today`, `used_cli_today`) — Copilot-specific signals not produced by Cursor/Claude Code; existing rows from those staging models will leave them NULL.
+- `copilot__ai_org_usage` — Bronze `copilot_org_metrics` → `class_ai_org_usage`. **Deferred**: `class_ai_org_usage` Silver class is not yet created — Copilot is its first contributor. Staging model is present, tagged `silver:class_ai_org_usage`, and includes `{{ config(enabled=false) }}` until the class is created in a coordinated PR. When activated, MUST also follow the ADR-0001 pattern.
 
 #### System Context
 
@@ -86,7 +86,7 @@ graph LR
 | `cpt-insightspec-fr-ghcopilot-org-metrics-collect` | Stream `copilot_org_metrics` → `GET /orgs/{org}/copilot/metrics/reports/organization-1-day?day=YYYY-MM-DD` → signed URL → NDJSON |
 | `cpt-insightspec-fr-ghcopilot-org-metrics-incremental` | Same `DatetimeBasedCursor` pattern as user metrics |
 | `cpt-insightspec-fr-ghcopilot-collection-runs` | **Deferred to Phase 2** — monitoring table produced by Argo orchestrator |
-| `cpt-insightspec-fr-ghcopilot-deduplication` | Primary keys: `user_login` (seats), composite `unique` (`day\|user_login` for user metrics, `insight_source_id\|day` for org metrics) |
+| `cpt-insightspec-fr-ghcopilot-deduplication` | Per ADR-0004: every Bronze row carries a `unique_key` String column with formula `{tenant_id}-{insight_source_id}-{natural_key}` (`-` separator). Natural key per stream: `user_login` (seats), `user_login-day` (user metrics), `day` (org metrics). |
 | `cpt-insightspec-fr-ghcopilot-tenant-tagging` | `inject_tenant_fields()` applied in each stream's `parse_response()` — injects `tenant_id`, `insight_source_id`, `collected_at`, `data_source = 'insight_github_copilot'` |
 | `cpt-insightspec-fr-ghcopilot-identity-key` | `copilot_seats.user_email` primary identity key; `copilot_user_metrics.user_login` resolved to email via Silver join |
 | `cpt-insightspec-fr-ghcopilot-identity-email-only` | Silver model uses only `user_email` for cross-system resolution; GitHub numeric IDs retained in Bronze only |
@@ -376,15 +376,44 @@ Two SQL transformations that route the connector's Bronze streams to cross-provi
 
 ##### `copilot__ai_dev_usage.sql`
 
-Reads from `copilot_user_metrics`; LEFT JOINs `copilot_seats` on `copilot_user_metrics.user_login = copilot_seats.user_login` to obtain `user_email`. Sets `data_source = 'insight_github_copilot'`, `provider = 'github'`, `client = 'copilot'`. `person_id` is NULL at Silver step 1; resolved in step 2 via Identity Manager. Materialization: `incremental`, unique key: `unique_id`.
+Reads from `copilot_user_metrics`; LEFT JOINs `copilot_seats` on `copilot_user_metrics.user_login = copilot_seats.user_login` to obtain `user_email`. Sets `tool = 'copilot'`, `source = 'copilot'`, `data_source = 'insight_github_copilot'`. `person_id` is NULL at Silver step 1; resolved in step 2 via Identity Manager.
 
-**NULL `user_email` policy**: The dbt model **MUST** filter `WHERE user_email IS NOT NULL` before writing to `class_ai_dev_usage`, since the Cursor and Windsurf staging models contributing to the same Silver view assume a non-null `email` column. Rows where `user_login` has no matching seat (transient race condition — seat removed between seat fetch and metrics fetch) are dropped from Silver but retained in Bronze (`copilot_user_metrics`). Bronze rows recover automatically on the next seat roster sync once the user re-appears in `copilot_seats`. Tracked in PRD OQ-COP-1.
+**dbt config (per ADR-0001)**:
+
+```sql
+{{ config(
+    materialized='incremental',
+    incremental_strategy='append',
+    unique_key='unique_key',
+    engine='ReplacingMergeTree(_version)',
+    order_by=['unique_key'],
+    on_schema_change='append_new_columns',
+    settings={'allow_nullable_key': 1},
+    schema='staging',
+    tags=['github-copilot', 'silver:class_ai_dev_usage']
+) }}
+```
+
+The model **MUST** project a `_version` column (`toUnixTimestamp64Milli(_airbyte_extracted_at)`) so RMT background merges can dedupe deterministically.
+
+**Bronze deduplication**: Per ADR-0002, every Airbyte Bronze table should be RMT-promoted via a `<connector>__bronze_promoted` model. The Copilot connector defers this until the upstream `promote_bronze_to_rmt` macro is fixed for `Nullable(String)` `unique_key` columns (current upstream macro lacks `SETTINGS allow_nullable_key=1` in its CTAS — affects every Airbyte Bronze incl. Jira and Claude Enterprise). In the meantime, this staging model wraps its Bronze read with `LIMIT 1 BY tenant_id, source_id, user_login, day` (latest by `_airbyte_extracted_at`) to drop Airbyte re-emit duplicates. When the macro is fixed, replace the `LIMIT 1 BY` with a `-- depends_on: {{ ref('github_copilot__bronze_promoted') }}` reference.
+
+**Silver class extension required for activation**: Three boolean columns must be added to `silver/ai/schema.yml` for `class_ai_dev_usage` before this staging model is enabled — `used_chat_today`, `used_agent_today`, `used_cli_today`. Existing Cursor and Claude Enterprise staging models will need a one-line addition each emitting these as `CAST(NULL AS Nullable(UInt8))` so UNION ALL types match. The `tool` and `source` enum `accepted_values` in `silver/ai/schema.yml` must also be extended with `'copilot'`.
+
+**NULL `user_email` policy**: The dbt model **MUST** filter `WHERE user_email IS NOT NULL` before writing to `class_ai_dev_usage`, since the Cursor and Claude Enterprise staging models contributing to the same Silver class assume a non-null `email` column. Rows where `user_login` has no matching seat (transient race condition — seat removed between seat fetch and metrics fetch) are dropped from Silver but retained in Bronze (`copilot_user_metrics`). Bronze rows recover automatically on the next seat roster sync once the user re-appears in `copilot_seats`. Tracked in PRD OQ-COP-1.
 
 ##### `copilot__ai_org_usage.sql`
 
-**Status: DEFERRED** — `class_ai_org_usage` Silver view does not yet exist. The model file is present and tagged `tag:github-copilot`, `tag:silver:class_ai_org_usage`, but includes `{{ config(enabled=false) }}` in its config block to prevent execution despite being matched by `dbt_select: tag:github-copilot+`. Will be activated (by removing `enabled=false`) in a separate PR alongside the `class_ai_org_usage` Silver view creation.
+**Status: DEFERRED** — the `class_ai_org_usage` Silver class **does not yet exist**; this connector would be its first contributor. The staging file is present and tagged `tag:github-copilot`, `tag:silver:class_ai_org_usage`, but includes `{{ config(enabled=false) }}` in its config block to prevent execution despite being matched by `dbt_select: tag:github-copilot+`. Activation requires (1) creating `silver/ai/class_ai_org_usage.sql` (RMT(_version) + ORDER BY unique_key per ADR-0001 — same pattern as `class_ai_dev_usage`) and (2) removing `enabled=false` from this staging model.
 
-**Tracking**: PRD OQ-COP-2 owns the `class_ai_org_usage` view-creation question. A dedicated GitHub issue **MUST** be filed under `cyberfabric/insight` referencing OQ-COP-2 before this model is activated; the issue link is to be added here once filed (target: Q3 2026 per PRD §13).
+When activated, this staging **MUST** follow ADR-0001: same config block as `copilot__ai_dev_usage.sql` above, `_version` column from `_airbyte_extracted_at`.
+
+**Tracking**: PRD OQ-COP-2 owns the `class_ai_org_usage` creation question. A dedicated GitHub issue **MUST** be filed under `cyberfabric/insight` referencing OQ-COP-2 before this model is activated; the issue link is to be added here once filed (target: Q3 2026 per PRD §13).
+
+##### What Copilot does **not** feed
+
+- `class_ai_assistant_usage` — Copilot is an IDE-tool, not a chat / assistant surface. Routing engagement metrics there would mix product domains.
+- `class_ai_api_usage` — Copilot does not expose token-level metering; that class is fed by Anthropic Admin and OpenAI.
 
 #### Extension Points & Stability Zones
 
@@ -574,7 +603,8 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 |-------|------|-------------|
 | `tenant_id` | String | Tenant isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `user_login` | String | GitHub username of the seat holder — primary key |
+| `unique_key` | String | Composite per ADR-0004: `concat(tenant_id, '-', insight_source_id, '-', user_login)` |
+| `user_login` | String | GitHub username of the seat holder |
 | `user_email` | String | Work email from linked GitHub account — primary identity key → `person_id` |
 | `plan_type` | String | `business` / `enterprise` / `unknown` |
 | `pending_cancellation_date` | String (nullable) | Cancellation date (ISO 8601), NULL if not cancelling |
@@ -586,9 +616,9 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | `collected_at` | String | Collection timestamp (UTC ISO 8601) — framework-injected |
 | `data_source` | String | Always `insight_github_copilot` — framework-injected |
 
-**PK**: `user_login`. Full refresh — one row per seat per sync.
+**PK / dedup key**: `unique_key`. Full refresh — one row per seat per sync. Bronze table will be RMT-promoted per ADR-0002 (deferred until upstream `promote_bronze_to_rmt` macro fix; see §3.2 for rationale).
 
-**Query patterns**: full-replace on every sync; Silver join reads by `user_login` (`login = user_login`). _ClickHouse sorting key recommendation: `(tenant_id, user_login)`._
+**Query patterns**: full-replace on every sync; Silver join reads by `user_login`. _ClickHouse `ORDER BY` will be `unique_key` per ADR-0001 once promoted; current default is `_airbyte_raw_id`._
 
 ---
 
@@ -600,7 +630,7 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 |-------|------|-------------|
 | `tenant_id` | String | Tenant isolation key — framework-injected |
 | `insight_source_id` | String | Connector instance identifier — framework-injected, DEFAULT '' |
-| `unique` | String | Composite key: `{day}\|{user_login}` |
+| `unique_key` | String | Composite per ADR-0004: `concat(tenant_id, '-', insight_source_id, '-', user_login, '-', day)` |
 | `user_login` | String | GitHub username (source-native: API field `user_login`) — joins to `copilot_seats.user_login` for email resolution |
 | `day` | String | Metric date (YYYY-MM-DD) — incremental cursor |
 | `loc_added_sum` | Number (nullable) | Lines of code added via Copilot suggestions |
@@ -612,9 +642,9 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | `collected_at` | String | Collection timestamp (UTC ISO 8601) — framework-injected |
 | `data_source` | String | Always `insight_github_copilot` — framework-injected |
 
-**PK**: `unique`. Granularity: one row per `(day, user_login)`. Incremental.
+**PK / dedup key**: `unique_key`. Granularity: one row per `(tenant, source, user_login, day)`. Incremental, append-only sync (per ADR-0001 / Connector Spec §4.10).
 
-**Query patterns**: Silver model reads by `user_login` for identity join; incremental loads filter by `day`. _ClickHouse sorting key recommendation: `(tenant_id, day, user_login)`._
+**Query patterns**: Silver staging reads by `user_login` for identity join; incremental loads filter by `day`. _ClickHouse `ORDER BY` will be `unique_key` per ADR-0001 once Bronze is RMT-promoted._
 
 ---
 
@@ -625,8 +655,8 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 | Field | Type | Description |
 |-------|------|-------------|
 | `tenant_id` | String | Tenant isolation key — framework-injected |
-| `insight_source_id` | String | Connector instance identifier — framework-injected, **required non-empty** (validated by `check_connection()`) |
-| `unique` | String | Composite key: `{insight_source_id}\|{day}` — `insight_source_id` discriminates between multiple org connections per tenant; **MUST** be non-empty to prevent silent collision when multiple connections are configured for the same tenant |
+| `insight_source_id` | String | Connector instance identifier — framework-injected, **required non-empty** (validated by `check_connection()`) — discriminates between multiple Copilot connections per tenant |
+| `unique_key` | String | Composite per ADR-0004: `concat(tenant_id, '-', insight_source_id, '-', day)`. The `tenant-source-` prefix prevents collision between connections; multi-org tenants get distinct keys naturally |
 | `day` | String | Metric date (YYYY-MM-DD) — incremental cursor |
 | `total_code_acceptance_activity_count` | Number (nullable) | Total accepted code suggestions across all users — **provisional** |
 | `total_loc_added_sum` | Number (nullable) | Total lines of AI-generated code added across all users — **provisional** |
@@ -640,9 +670,9 @@ Bronze tables are created by the destination (ClickHouse). In addition to connec
 
 > **Provisional**: Org-level metric field names are inferred from GitHub API documentation; the live reports endpoint may use different naming conventions. JSON Schema must include `additionalProperties: true` to passthrough unexpected fields. Confirm exact field names against live API before Silver model activation.
 
-**PK**: `unique`. Granularity: one row per `(insight_source_id, day)`. Incremental.
+**PK / dedup key**: `unique_key`. Granularity: one row per `(tenant, source, day)`. Incremental, append-only.
 
-**Query patterns**: incremental loads filter by `day`; `insight_source_id` component of `unique` discriminates multi-org tenants. _ClickHouse sorting key recommendation: `(tenant_id, insight_source_id, day)`._
+**Query patterns**: incremental loads filter by `day`. _ClickHouse `ORDER BY` will be `unique_key` per ADR-0001 once Bronze is RMT-promoted._
 
 ---
 
@@ -698,38 +728,69 @@ Connection: github-copilot-{org_name}-daily
 
 #### User Metrics → `class_ai_dev_usage`
 
-| Bronze (`copilot_user_metrics` + `copilot_seats`) | Silver (`class_ai_dev_usage`) | Transformation |
-|--------------------------------------------------|-------------------------------|---------------|
-| `tenant_id`, `insight_source_id` | Pass through | — |
-| `day` | `report_date` | Rename |
-| `copilot_seats.user_email` | `email` | LEFT JOIN on `user_login = user_login` |
-| `user_login` | `user_login` | Retained as secondary identifier |
-| `loc_added_sum` | `lines_added` | Rename |
-| `code_acceptance_activity_count` | `code_acceptances` | Rename |
-| `user_initiated_interaction_count` | `interactions` | Rename |
-| `used_chat`, `used_agent`, `used_cli` | `used_chat`, `used_agent`, `used_cli` | Pass through (Copilot-specific — see migration note below) |
-| — | `person_id` | NULL at Silver step 1; resolved in step 2 |
-| — | `provider` | `'github'` constant |
-| — | `client` | `'copilot'` constant |
-| `data_source` | `data_source` | `'insight_github_copilot'` |
+`class_ai_dev_usage` is an **existing** Silver class (`silver/ai/class_ai_dev_usage.sql`) materialized as `ReplacingMergeTree(_version)` per ADR-0001, currently fed by Cursor + Claude Enterprise. Adding Copilot is a strict additive operation: extend the schema with three boolean columns, add `'copilot'` to two enum `accepted_values`, write the staging model with `tool='copilot'`, `source='copilot'`.
 
-**`class_ai_dev_usage` schema alignment**: The unified Silver view `class_ai_dev_usage` is **not yet defined** in the codebase (per Cursor PRD OQ-CUR-1, claude-admin OQ-CADM-3). When the view is created, it **MUST** include `used_chat`, `used_agent`, `used_cli` as nullable Boolean columns — these are Copilot-specific signals not produced by the Cursor, Windsurf, or Claude Code staging models, which will leave them NULL. No retrofit migration of existing Cursor/Windsurf staging models is required, because the view does not yet exist; both the view definition and the three contributing staging models (`cursor`, `windsurf`, `copilot__ai_dev_usage`) **MUST** be activated together in a coordinated PR. This is captured by Cursor OQ-CUR-1 / claude-admin OQ-CADM-3.
+| Bronze (`copilot_user_metrics` + `copilot_seats`) | Silver column | Transformation |
+|--------------------------------------------------|---------------|---------------|
+| `tenant_id` | `insight_tenant_id` | Pass through (rename) |
+| `insight_source_id` | `source_id` | Pass through |
+| (composite) | `unique_key` | `concat(tenant_id, '-', insight_source_id, '-', user_login, '-', day)` per ADR-0004 |
+| `copilot_seats.user_email` | `email` | LEFT JOIN on `user_login = user_login`; `lower(trim(...))`; row dropped if NULL |
+| — | `api_key_id` | `CAST(NULL AS Nullable(String))` — Copilot uses PAT/session, not per-user API keys |
+| `day` | `day` | Pass through (already `Date`) |
+| (constant) | `tool` | `'copilot'` |
+| (constant) | `source` | `'copilot'` |
+| (constant) | `data_source` | `'insight_github_copilot'` |
+| — | `session_count` | `toUInt32(1)` per active day (Copilot has no session counter) |
+| `loc_added_sum` | `lines_added` | `toUInt32(coalesce(loc_added_sum, 0))` |
+| — | `lines_removed` | `toUInt32(0)` — Copilot reports only added lines |
+| — | `total_lines_added`, `total_lines_removed` | NULL — Copilot does not see total keystrokes |
+| `code_acceptance_activity_count` | `tool_use_accepted` | Rename |
+| — | `tool_use_offered` | NULL — Copilot does not expose «offered» counter |
+| `code_acceptance_activity_count` | `completions_count` | Same value as `tool_use_accepted` |
+| `used_agent`<br/>(boolean) | `agent_sessions` | NULL — Copilot's `used_agent` is a flag, not a counter; populated as boolean in `used_agent_today` (extension column below) |
+| — | `chat_requests` | NULL — Copilot does not expose IDE-chat counter |
+| — | `cost_cents` | NULL — Copilot is per-seat subscription, not per-event consumption |
+| — | `commits_count`, `pull_requests_count`, `tool_action_breakdown_json` | NULL — these are Claude Enterprise extensions; Copilot does not produce them |
+| `used_chat` | `used_chat_today` | **NEW Silver column** (boolean). NULL for Cursor/Claude Enterprise rows |
+| `used_agent` | `used_agent_today` | **NEW Silver column** (boolean) |
+| `used_cli` | `used_cli_today` | **NEW Silver column** (boolean) |
+| `_airbyte_extracted_at` | `_version` | `toUnixTimestamp64Milli(_airbyte_extracted_at)` per ADR-0001 |
+| `collected_at` | `collected_at` | Parse to `DateTime64(3)` |
 
-#### Org Metrics → `class_ai_org_usage` (deferred)
+**Required pre-activation changes to the existing Silver class**:
 
-| Bronze (`copilot_org_metrics`) | Silver (`class_ai_org_usage`) | Transformation |
-|-------------------------------|-------------------------------|---------------|
-| `tenant_id`, `insight_source_id` | Pass through | — |
-| `day` | `report_date` | Rename |
+1. `silver/ai/schema.yml` — add three columns (`used_chat_today`, `used_agent_today`, `used_cli_today`) to `class_ai_dev_usage` definition with description "Copilot-specific. NULL for Cursor / Claude Code rows."
+2. `silver/ai/schema.yml` — extend `tool.accepted_values` with `'copilot'` and `source.accepted_values` with `'copilot'`.
+3. `cursor__ai_dev_usage.sql` — add `CAST(NULL AS Nullable(UInt8)) AS used_chat_today, used_agent_today, used_cli_today` to maintain UNION ALL column alignment. Same for `claude_enterprise__ai_dev_usage.sql`.
+4. **No data migration is required for existing rows** — `ALTER TABLE ADD COLUMN` (which `on_schema_change='append_new_columns'` will run automatically) creates the columns as NULL on existing data.
+
+These four edits are bundled into the same PR that activates the Copilot staging model.
+
+#### Org Metrics → `class_ai_org_usage` (deferred — class to be created)
+
+`class_ai_org_usage` is **not yet a Silver class** — the Copilot connector would be its first contributor. The class will be created in a coordinated PR following ADR-0001 (`materialized='incremental'`, `engine='ReplacingMergeTree(_version)'`, `order_by=['unique_key']`).
+
+| Bronze (`copilot_org_metrics`) | Silver column | Transformation |
+|-------------------------------|---------------|---------------|
+| `tenant_id` | `insight_tenant_id` | Pass through (rename) |
+| `insight_source_id` | `source_id` | Pass through |
+| (composite) | `unique_key` | `concat(tenant_id, '-', insight_source_id, '-', day)` per ADR-0004 |
+| `day` | `day` | Pass through |
+| (constant) | `tool` | `'copilot'` |
+| (constant) | `source` | `'copilot'` |
+| (constant) | `data_source` | `'insight_github_copilot'` |
+| `total_active_user_count` | `total_active_users` | Rename |
+| `total_engaged_user_count` | `total_engaged_users` | Rename |
 | `total_code_acceptance_activity_count` | `total_code_acceptances` | Rename |
 | `total_loc_added_sum` | `total_lines_added` | Rename |
-| `total_active_user_count` | `total_active_users` | Rename |
-| `total_used_chat_count`, `total_used_agent_count`, `total_used_cli_count` | Feature engagement columns | Pass through |
-| — | `provider` | `'github'` constant |
-| — | `tool` | `'copilot'` constant |
-| `data_source` | `data_source` | `'insight_github_copilot'` |
+| `total_used_chat_count` | `total_used_chat` | Rename |
+| `total_used_agent_count` | `total_used_agent` | Rename |
+| `total_used_cli_count` | `total_used_cli` | Rename |
+| `_airbyte_extracted_at` | `_version` | `toUnixTimestamp64Milli(_airbyte_extracted_at)` per ADR-0001 |
+| `collected_at` | `collected_at` | Parse to `DateTime64(3)` |
 
-**Status**: Deferred — `class_ai_org_usage` Silver view does not yet exist. Activated when the view is created.
+**Status**: Deferred. Both the Silver class definition and this staging model's `enabled=false` removal go in the same activation PR. Per ADR-0001 the new class **MUST** use `RMT(_version)` and `ORDER BY (unique_key)`; per ADR-0004 the `unique_key` composite **MUST** be tenant-source-prefixed.
 
 #### Silver/Gold Summary
 
