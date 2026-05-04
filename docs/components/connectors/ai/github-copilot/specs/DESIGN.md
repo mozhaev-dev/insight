@@ -87,7 +87,7 @@ graph LR
 | `cpt-insightspec-fr-ghcopilot-org-metrics-incremental` | Same `DatetimeBasedCursor` pattern as user metrics |
 | `cpt-insightspec-fr-ghcopilot-collection-runs` | **Deferred to Phase 2** — monitoring table produced by Argo orchestrator |
 | `cpt-insightspec-fr-ghcopilot-deduplication` | Per ADR-0004: every Bronze row carries a `unique_key` String column with formula `{tenant_id}-{insight_source_id}-{natural_key}` (`-` separator). Natural key per stream: `user_login` (seats), `user_login-day` (user metrics), `day` (org metrics). |
-| `cpt-insightspec-fr-ghcopilot-tenant-tagging` | `inject_tenant_fields()` applied in each stream's `parse_response()` — injects `tenant_id`, `insight_source_id`, `collected_at`, `data_source = 'insight_github_copilot'` |
+| `cpt-insightspec-fr-ghcopilot-tenant-tagging` | `_add_envelope()` applied in each stream's `parse_response()` — injects `tenant_id`, `insight_source_id`, `collected_at`, `data_source = 'insight_github_copilot'` |
 | `cpt-insightspec-fr-ghcopilot-identity-key` | `copilot_seats.user_email` primary identity key; `copilot_user_metrics.user_login` resolved to email via Silver join |
 | `cpt-insightspec-fr-ghcopilot-identity-email-only` | Silver model uses only `user_email` for cross-system resolution; GitHub numeric IDs retained in Bronze only |
 
@@ -98,7 +98,7 @@ graph LR
 | `cpt-insightspec-nfr-ghcopilot-auth` | PAT Bearer auth; no auth on download | `rest_headers()` / `download_headers()` in `auth.py` | `Authorization: Bearer {token}` for `api.github.com`; empty headers `{}` for signed-URL download | Integration test with valid/invalid PAT |
 | `cpt-insightspec-nfr-ghcopilot-rate-limiting` | Exponential backoff on 429 | `RateLimitedSession` wrapper | Inspects `Retry-After` / `X-RateLimit-Reset`; exponential backoff with jitter | Observed behaviour during backfill |
 | `cpt-insightspec-nfr-ghcopilot-freshness` | Data for day D within 48h | Scheduler config | Daily schedule at 02:00 UTC; cursor covers D-1 at minimum | SLA monitoring |
-| `cpt-insightspec-nfr-ghcopilot-data-source` | `data_source = 'insight_github_copilot'` on all rows | `inject_tenant_fields()` | Hard-coded constant injected in every stream's `parse_response()` | Row-level assertion in integration tests |
+| `cpt-insightspec-nfr-ghcopilot-data-source` | `data_source = 'insight_github_copilot'` on all rows | `_add_envelope()` | Hard-coded constant injected in every stream's `parse_response()` | Row-level assertion in integration tests |
 | `cpt-insightspec-nfr-ghcopilot-idempotent` | No duplicates on re-sync | Primary key definitions | `user_login` (seats), composite `unique` (metrics streams) as Airbyte dedup keys | Run sync twice; verify row counts unchanged |
 | `cpt-insightspec-nfr-ghcopilot-schema-stability` | Stable Bronze schema; additive-only changes | `spec.json` + versioning policy | Fixed column set per stream; new API fields handled via nullable columns or pass-through JSON | Schema diff in CI |
 
@@ -134,7 +134,7 @@ Use the Airbyte Python CDK (`AbstractSource`) when the API fetch pattern cannot 
 
 - [ ] `p2` - **ID**: `cpt-insightspec-principle-ghcopilot-source-native-schema`
 
-Bronze tables preserve GitHub API field names without renaming. Boolean flags (`used_chat`, `used_agent`, `used_cli`) are retained as-is from the NDJSON payload. Framework fields (`tenant_id`, `insight_source_id`, `collected_at`, `data_source`) are injected by `inject_tenant_fields()` and are not present in the API response.
+Bronze tables preserve GitHub API field names without renaming. Boolean flags (`used_chat`, `used_agent`, `used_cli`) are retained as-is from the NDJSON payload. Framework fields (`tenant_id`, `insight_source_id`, `collected_at`, `data_source`) are injected by `_add_envelope()` and are not present in the API response.
 
 #### Email as the Sole Cross-System Identity Key
 
@@ -160,7 +160,7 @@ Only a GitHub Personal Access Token (classic) with `manage_billing:copilot` **an
 
 - [ ] `p1` - **ID**: `cpt-insightspec-constraint-ghcopilot-no-auth-download`
 
-Download requests to `copilot-reports.github.com` **MUST NOT** include the `Authorization` header. The signed URLs are pre-authenticated; sending auth headers to this domain may cause request failures. The `download_headers()` function returns an empty dict. This is the primary reason the connector cannot use the Airbyte declarative manifest framework.
+Download requests to `copilot-reports.github.com` **MUST NOT** include the `Authorization` header. The signed URLs are pre-authenticated; sending auth headers to this domain may cause request failures. The `download_headers()` function returns only a non-auth set (`User-Agent`, `Accept: application/x-ndjson, text/plain, */*`) — explicitly without `Authorization`. This is the primary reason the connector cannot use the Airbyte declarative manifest framework.
 
 #### Signed URLs Are Short-Lived
 
@@ -191,8 +191,8 @@ All three GitHub API endpoint calls use HTTP GET with query parameters. There ar
 | Entity | Description | Maps To |
 |--------|-------------|---------|
 | `SeatAssignment` | One assigned Copilot seat for a GitHub user. Key: `user_login`. | `copilot_seats` |
-| `UserDailyMetrics` | Per-user daily code acceptance and feature engagement. Key: composite `day\|user_login`. | `copilot_user_metrics` |
-| `OrgDailyMetrics` | Org-level daily aggregates across all users. Key: composite `insight_source_id\|day`. | `copilot_org_metrics` |
+| `UserDailyMetrics` | Per-user daily code acceptance and feature engagement. Key: composite `{tenant}-{source}-{user_login}-{day}` (per ADR-0004). | `copilot_user_metrics` |
+| `OrgDailyMetrics` | Org-level daily aggregates across all users. Key: composite `{tenant}-{source}-{day}` (per ADR-0004). | `copilot_org_metrics` |
 
 **Relationships**:
 
@@ -210,7 +210,7 @@ All three GitHub API endpoint calls use HTTP GET with query parameters. There ar
 graph TD
     subgraph Package["source_github_copilot (Python CDK)"]
         Auth["auth.py<br/>rest_headers() — Bearer token<br/>download_headers() — empty"]
-        Inject["inject_tenant_fields()<br/>tenant_id, insight_source_id,<br/>collected_at, data_source"]
+        Inject["_add_envelope()<br/>tenant_id, insight_source_id,<br/>collected_at, data_source"]
         Source["SourceGitHubCopilot<br/>AbstractSource<br/>check_connection(), streams()"]
         S1["CopilotSeatsStream<br/>GET /copilot/billing/seats<br/>Full refresh, page + per_page=100"]
         S2["CopilotUserMetricsStream<br/>GET /metrics/reports/users-1-day<br/>Incremental, P1D, signed URL + NDJSON"]
@@ -305,7 +305,7 @@ Extracts the full seat roster (all active and pending Copilot seat assignments).
 - Sync mode: Full refresh on every run.
 - Pagination: offset-style — `page` (starts at 1) + `per_page=100`; stops when the API returns fewer than 100 items.
 - Auth: `Authorization: Bearer {token}` via `rest_headers()`.
-- Injects framework fields via `inject_tenant_fields()`.
+- Injects framework fields via `_add_envelope()`.
 - Field extraction: `user_login` and `user_email` are mapped from `assignee.login` and `assignee.email` in the API response — the seats endpoint nests identity fields under the `assignee` sub-object, not at the top level.
 - Primary key: `user_login`.
 
@@ -331,7 +331,7 @@ Extracts per-user daily Copilot usage metrics — the primary input for `class_a
 - Step 1 response: `{"download_links": [...], "report_day": "YYYY-MM-DD"}`.
 - Step 2: For each URL in `download_links`, `GET {signed_url}` via `download_headers()` (no auth header). Parse each line as a JSON object — one record per line.
 - Sync mode: Incremental; cursor field `day` (YYYY-MM-DD); advances from `max(day)` to yesterday UTC.
-- Injects framework fields and composite `unique` key (`{day}|{user_login}`) per record.
+- Injects framework fields and composite `unique_key` (`{tenant}-{source}-{user_login}-{day}` per ADR-0004) per record.
 
 ##### Responsibility boundaries
 
@@ -396,7 +396,7 @@ Reads from `copilot_user_metrics`; LEFT JOINs `copilot_seats` on `copilot_user_m
 
 The model **MUST** project a `_version` column (`toUnixTimestamp64Milli(_airbyte_extracted_at)`) so RMT background merges can dedupe deterministically.
 
-**Bronze deduplication**: Per ADR-0002, every Airbyte Bronze table should be RMT-promoted via a `<connector>__bronze_promoted` model. The Copilot connector defers this until the upstream `promote_bronze_to_rmt` macro is fixed for `Nullable(String)` `unique_key` columns (current upstream macro lacks `SETTINGS allow_nullable_key=1` in its CTAS — affects every Airbyte Bronze incl. Jira and Claude Enterprise). In the meantime, this staging model wraps its Bronze read with `LIMIT 1 BY tenant_id, source_id, user_login, day` (latest by `_airbyte_extracted_at`) to drop Airbyte re-emit duplicates. When the macro is fixed, replace the `LIMIT 1 BY` with a `-- depends_on: {{ ref('github_copilot__bronze_promoted') }}` reference.
+**Bronze deduplication**: Per ADR-0002, every Airbyte Bronze table should be RMT-promoted via a `<connector>__bronze_promoted` model. The Copilot connector defers this until the upstream `promote_bronze_to_rmt` macro is fixed for `Nullable(String)` `unique_key` columns (current upstream macro lacks `SETTINGS allow_nullable_key=1` in its CTAS — affects every Airbyte Bronze incl. Jira and Claude Enterprise). A dedicated GitHub issue **MUST** be filed under `cyberfabric/insight` to track the macro fix; the issue link is to be added here once filed. In the meantime, this staging model wraps its Bronze read with `LIMIT 1 BY tenant_id, source_id, user_login, day` (latest by `_airbyte_extracted_at`) to drop Airbyte re-emit duplicates. When the macro is fixed, replace the `LIMIT 1 BY` with a `-- depends_on: {{ ref('github_copilot__bronze_promoted') }}` reference.
 
 **Silver class extension required for activation**: Three boolean columns must be added to `silver/ai/schema.yml` for `class_ai_dev_usage` before this staging model is enabled — `used_chat_today`, `used_agent_today`, `used_cli_today`. Existing Cursor and Claude Enterprise staging models will need a one-line addition each emitting these as `CAST(NULL AS Nullable(UInt8))` so UNION ALL types match. The `tool` and `source` enum `accepted_values` in `silver/ai/schema.yml` must also be extended with `'copilot'`.
 
@@ -422,7 +422,7 @@ When activated, this staging **MUST** follow ADR-0001: same config block as `cop
 - **New dbt Silver model**: add a `.sql` file to `dbt/`, tag it `tag:github-copilot` to include it in the platform `dbt_select`.
 
 **Stability zones**:
-- **Stable (external contract)**: Bronze namespace `bronze_github_copilot`, stream names (`copilot_*`), `copilot_seats.user_email`, `copilot_user_metrics.user_login`, `inject_tenant_fields()` signature.
+- **Stable (external contract)**: Bronze namespace `bronze_github_copilot`, stream names (`copilot_*`), `copilot_seats.user_email`, `copilot_user_metrics.user_login`, `_add_envelope()` signature.
 - **Internal (may change without notice)**: `_fetch_ndjson_records()` helper implementation, `auth.py` function signatures.
 
 ### 3.3 API Contracts
@@ -839,7 +839,7 @@ A full daily incremental sync for a 200-person team (catching up 1 day) takes ap
 | **SAFE (Safety)** | Pure data-extraction pipeline with no interaction with physical systems. |
 | **REL (Reliability)** | Idempotent extraction via deduplication keys; retry logic addresses transient GitHub API failures. Framework-managed state and scheduling. |
 | **UX (Usability)** | No user-facing interface; configuration is a K8s Secret and Airbyte connection form. |
-| **MAINT (Maintainability)** | Python CDK source is < 500 lines of domain-specific code; shared patterns (`auth.py`, `inject_tenant_fields()`, `_fetch_ndjson_records()`) minimize duplication. |
+| **MAINT (Maintainability)** | Python CDK source is < 500 lines of domain-specific code; shared patterns (`auth.py`, `_add_envelope()`, `_fetch_ndjson_records()`) minimize duplication. |
 | **COMPL (Compliance)** | Work emails are personal data; retention, deletion, and access controls are delegated to the destination operator. |
 | **OPS (Operations)** | Deployed as a standard Airbyte connection. Phase 1 observability signals: sync failure surfaced by Airbyte sync status; HTTP 401/403 indicates PAT expiry or insufficient scope; HTTP 429 rate saturation indicates backfill volume spike; `check_connection()` validates credential and org access on each connection setup. Freshness gap: `copilot_user_metrics.max(day)` > 48h behind UTC indicates a missed sync. The `collection_runs` monitoring table (per-stream record counts, API call totals, error counts) is produced by the Argo orchestrator in Phase 2. |
 | **TEST (Testing)** | Acceptance criteria in PRD §9; integration tests validate connection check and row-level assertions. Airbyte framework provides connector acceptance tests (CATs). |

@@ -95,11 +95,37 @@ class SourceGitHubCopilot(AbstractSource):
             if resp.status_code == 403:
                 return False, (
                     f"Token lacks `manage_billing:copilot` scope (HTTP 403 on /copilot/billing/seats). "
-                    "Recreate PAT with scope and retry."
+                    "Recreate PAT with both `manage_billing:copilot` AND `read:org` scopes and retry."
                 )
             if resp.status_code != 200:
                 return False, (
                     f"Failed to access seats endpoint for org '{org}' (HTTP "
+                    f"{resp.status_code}): {resp.text[:200]}"
+                )
+
+            # 3. Metrics reports endpoint access — validates read:org scope.
+            # Probe with a far-past date (returns HTTP 204 — that's fine for the
+            # scope check, since 204 means "auth OK, just no data for this day").
+            # 403 here = `read:org` missing (manage_billing:copilot alone is not
+            # sufficient for /copilot/metrics/reports/*).
+            probe_date = "2024-01-01"  # well before the API's 2025-10-10 data start
+            resp = requests.get(
+                f"https://api.github.com/orgs/{org}/copilot/metrics/reports/users-1-day",
+                headers=headers,
+                params={"day": probe_date},
+                timeout=15,
+            )
+            if resp.status_code == 403:
+                return False, (
+                    f"Token lacks `read:org` scope (HTTP 403 on /copilot/metrics/reports). "
+                    "The `manage_billing:copilot` scope is sufficient for the seats endpoint "
+                    "but the metrics reports endpoints additionally require `read:org`. "
+                    "Recreate PAT with both scopes and retry."
+                )
+            if resp.status_code not in (200, 204, 404):
+                # 200/204 = OK; 404 sometimes returned for very old dates; anything else is wrong
+                return False, (
+                    f"Failed to probe metrics endpoint for org '{org}' (HTTP "
                     f"{resp.status_code}): {resp.text[:200]}"
                 )
 

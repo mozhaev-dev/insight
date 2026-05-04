@@ -6,5 +6,5 @@ RUN pip install /airbyte/integration_code
 RUN useradd --create-home --no-log-init --shell /bin/bash airbyte_user
 USER airbyte_user
 
-ENV AIRBYTE_ENTRYPOINT="python /airbyte/integration_code/source_github_copilot/source.py"
-ENTRYPOINT ["python", "/airbyte/integration_code/source_github_copilot/source.py"]
+ENV AIRBYTE_ENTRYPOINT="source-github-copilot"
+ENTRYPOINT ["source-github-copilot"]

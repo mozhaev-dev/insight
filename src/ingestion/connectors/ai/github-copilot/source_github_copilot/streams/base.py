@@ -13,10 +13,11 @@ Both inherit from HttpStream (CDK retry mechanics) and share two helpers:
   _add_envelope     — injects tenant_id, source_id, data_source, collected_at, unique_key
 """
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, List, Mapping, MutableMapping, Optional
 
 import requests
@@ -30,6 +31,20 @@ logger = logging.getLogger("airbyte")
 def _now_iso() -> str:
     """UTC ISO-8601 timestamp for the `collected_at` framework field."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def yesterday_utc() -> str:
+    """End of cursor window for the report streams (data for D available ~24h after end-of-D UTC)."""
+    return (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+class SignedUrlExpired(Exception):
+    """Raised inside Step-2 NDJSON download when a signed URL returns 4xx-not-rate-limit.
+
+    Caller (parse_response in CopilotReportsStream) catches this and re-issues the
+    Step-1 envelope request to obtain a fresh signed URL — per DESIGN §3.6.
+    """
+    pass
 
 
 def _make_unique_key(tenant_id: str, source_id: str, *natural_key_parts: str) -> str:
@@ -168,11 +183,28 @@ class CopilotReportsStream(CopilotRestStream, ABC):
         """Natural-key parts for unique_key composition — concrete per stream."""
         ...
 
+    # Maximum re-fetches of the Step-1 envelope when the Step-2 signed URL has expired.
+    # Per DESIGN §3.6: signed URLs are short-lived; if a 4xx comes back during NDJSON
+    # download we re-issue the envelope to get a fresh URL set, then retry. Cap at 2 to
+    # bound runtime and prevent infinite loops if something else is wrong.
+    _SIGNED_URL_REFETCH_LIMIT = 2
+
     def parse_response(self, response: requests.Response, stream_slice=None, **kwargs) -> Iterable[Mapping[str, Any]]:
         """Step 1 envelope handler. HTTP 204 → emit nothing (data not available for day)."""
         if not self._guard_response(response):
             # 204 No Content or other non-2xx — emit zero records, cursor advances.
             return
+
+        day = (stream_slice or {}).get("day", "")
+        yield from self._yield_from_envelope(response, day, refetch_count=0)
+
+    def _yield_from_envelope(
+        self,
+        response: requests.Response,
+        day: str,
+        refetch_count: int,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Parse envelope, dispatch Step-2 downloads. Retries on signed-URL expiry."""
         try:
             envelope = response.json()
         except ValueError as e:
@@ -181,21 +213,55 @@ class CopilotReportsStream(CopilotRestStream, ABC):
 
         download_links = envelope.get("download_links") or []
         if not download_links:
-            logger.info(f"Empty download_links for {response.url} (day data not yet ready)")
+            logger.info(f"Empty download_links for day={day} (day data not yet ready)")
             return
 
-        day = (stream_slice or {}).get("day", "")
         for entry in download_links:
             url = entry.get("url") if isinstance(entry, dict) else entry
             if not url:
                 continue
-            yield from self._fetch_ndjson_records(url, day)
+            try:
+                yield from self._fetch_ndjson_records(url, day)
+            except SignedUrlExpired as exc:
+                if refetch_count >= self._SIGNED_URL_REFETCH_LIMIT:
+                    logger.error(
+                        f"Signed URL expired ({exc}) for day={day}; "
+                        f"refetch limit ({self._SIGNED_URL_REFETCH_LIMIT}) reached. "
+                        "Skipping this day — cursor will retry on next run."
+                    )
+                    return
+                logger.warning(
+                    f"Signed URL expired ({exc}) for day={day}; re-fetching envelope "
+                    f"(attempt {refetch_count + 1}/{self._SIGNED_URL_REFETCH_LIMIT})"
+                )
+                fresh_envelope = self._refetch_envelope(day)
+                if fresh_envelope is None:
+                    return
+                yield from self._yield_from_envelope(fresh_envelope, day, refetch_count + 1)
+                return  # don't continue iterating original (now-stale) download_links
+
+    def _refetch_envelope(self, day: str) -> Optional[requests.Response]:
+        """Re-issue the Step-1 envelope request to get fresh signed URLs."""
+        url = f"{self.url_base}{self.path()}"
+        try:
+            resp = requests.get(
+                url,
+                headers=rest_headers(self._token),
+                params=self.request_params(stream_slice={"day": day}),
+                timeout=self.request_timeout,
+            )
+        except requests.RequestException as e:
+            logger.error(f"Envelope re-fetch failed for day={day}: {e}")
+            return None
+        if not self._guard_response(resp):
+            return None
+        return resp
 
     def _fetch_ndjson_records(self, signed_url: str, day: str) -> Iterable[Mapping[str, Any]]:
         """Step 2: GET signed URL without Authorization, parse NDJSON line-by-line.
 
-        Signed URLs expire shortly; on retry we re-fetch the envelope (handled at the
-        Airbyte sync level, not here). Within a single sync run, treat 4xx as terminal.
+        Raises SignedUrlExpired if the URL returned 4xx — caller will re-fetch envelope.
+        Network errors and 5xx are logged + treated as terminal for this URL.
         """
         try:
             resp = requests.get(
@@ -208,15 +274,19 @@ class CopilotReportsStream(CopilotRestStream, ABC):
             logger.error(f"Signed URL fetch failed: {e}")
             return
 
-        if resp.status_code >= 400:
-            logger.error(f"Signed URL returned HTTP {resp.status_code}: {signed_url[:120]}...")
+        if 400 <= resp.status_code < 500:
+            raise SignedUrlExpired(
+                f"HTTP {resp.status_code} on signed URL (likely expired): {signed_url[:120]}..."
+            )
+        if resp.status_code >= 500:
+            logger.error(f"Signed URL server error HTTP {resp.status_code}: {signed_url[:120]}...")
             return
 
         for line in resp.iter_lines(decode_unicode=True):
             if not line:
                 continue
             try:
-                record = __import__("json").loads(line)
+                record = json.loads(line)
             except ValueError:
                 logger.warning(f"Skipping malformed NDJSON line: {line[:200]}")
                 continue

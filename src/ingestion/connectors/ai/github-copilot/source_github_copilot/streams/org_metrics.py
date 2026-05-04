@@ -10,24 +10,25 @@ Field names are PROVISIONAL — the live reports API may use different naming
 conventions than what's in our spec. JSON Schema uses additionalProperties=true
 so unexpected fields pass through. Confirm exact field names against live API
 before activating the deferred Silver model `copilot__ai_org_usage`.
+
+Cursor advancement (Major #5 fix): same IncrementalMixin pattern as
+user_metrics — state advances per-slice so HTTP 204 days don't get re-fetched
+on every sync.
 """
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Any, Iterable, List, Mapping, MutableMapping, Optional
 
 import requests
+from airbyte_cdk.sources.streams import IncrementalMixin
 
-from source_github_copilot.streams.base import CopilotReportsStream
+from source_github_copilot.streams.base import CopilotReportsStream, yesterday_utc
 
 logger = logging.getLogger("airbyte")
 
 
-def _yesterday_utc() -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-
-class CopilotOrgMetricsStream(CopilotReportsStream):
+class CopilotOrgMetricsStream(CopilotReportsStream, IncrementalMixin):
     """Incremental org-level daily metrics."""
 
     name = "copilot_org_metrics"
@@ -40,9 +41,19 @@ class CopilotOrgMetricsStream(CopilotReportsStream):
     ):
         super().__init__(**kwargs)
         self._start_date = start_date or self._default_start_date()
+        self._state: Mapping[str, Any] = {}
+
+    @property
+    def state(self) -> Mapping[str, Any]:
+        return self._state
+
+    @state.setter
+    def state(self, value: Mapping[str, Any]):
+        self._state = value or {}
 
     @staticmethod
     def _default_start_date() -> str:
+        from datetime import datetime, timezone
         return (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
 
     def path(self, **kwargs) -> str:
@@ -65,9 +76,11 @@ class CopilotOrgMetricsStream(CopilotReportsStream):
         stream_state: Optional[Mapping[str, Any]] = None,
         **kwargs,
     ) -> Iterable[Optional[Mapping[str, Any]]]:
-        cursor = (stream_state or {}).get(self.cursor_field)
+        # Prefer in-memory state (advanced per-slice in read_records below) over
+        # stream_state argument — see Major #5 fix in user_metrics.py.
+        cursor = (self._state or {}).get(self.cursor_field) or (stream_state or {}).get(self.cursor_field)
         start = self._next_day(cursor) if cursor else self._start_date
-        end = _yesterday_utc()
+        end = yesterday_utc()
 
         try:
             current = date.fromisoformat(start)
@@ -83,15 +96,6 @@ class CopilotOrgMetricsStream(CopilotReportsStream):
     @staticmethod
     def _next_day(d: str) -> str:
         return (date.fromisoformat(d) + timedelta(days=1)).isoformat()
-
-    def get_updated_state(
-        self,
-        current_stream_state: Mapping[str, Any],
-        latest_record: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        latest_day = latest_record.get(self.cursor_field) or ""
-        prev = (current_stream_state or {}).get(self.cursor_field, "")
-        return {self.cursor_field: max(latest_day, prev)}
 
     def _record_pk_parts(self, record: dict, day: str) -> List[str]:
         """unique_key composition: {tenant}-{source}-{day}.
@@ -114,6 +118,27 @@ class CopilotOrgMetricsStream(CopilotReportsStream):
                 record = dict(record)
                 record["day"] = day
             yield record
+
+    def read_records(
+        self,
+        sync_mode,
+        cursor_field=None,
+        stream_slice: Optional[Mapping[str, Any]] = None,
+        stream_state: Optional[Mapping[str, Any]] = None,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Advance state per-slice — see user_metrics.py for Major #5 rationale."""
+        for record in super().read_records(
+            sync_mode=sync_mode,
+            cursor_field=cursor_field,
+            stream_slice=stream_slice,
+            stream_state=stream_state,
+        ):
+            yield record
+        if stream_slice and stream_slice.get("day"):
+            slice_day = stream_slice["day"]
+            current_max = (self._state or {}).get(self.cursor_field, "")
+            if slice_day > current_max:
+                self._state = {self.cursor_field: slice_day}
 
     def get_json_schema(self) -> Mapping[str, Any]:
         """JSON Schema for `bronze_github_copilot.copilot_org_metrics`. additionalProperties=true

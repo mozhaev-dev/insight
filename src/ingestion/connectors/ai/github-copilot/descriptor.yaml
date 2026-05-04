@@ -5,11 +5,12 @@ type: cdk
 schedule: "0 2 * * *"   # daily at 02:00 UTC (data for day D available ~24h after end-of-day D UTC)
 workflow: sync
 
-# Silver routing (deferred — Bronze-only release): no Silver staging models tagged
-# silver:class_* yet. The dbt selector picks up models tagged `github-copilot` (none
-# in this iteration). When the staging models activate, they'll add the
-# silver:class_ai_dev_usage / silver:class_ai_org_usage tags.
-dbt_select: "tag:github-copilot+"
+# Silver routing: Bronze-only release. No dbt models ship with this connector
+# yet, so no models match a `tag:github-copilot+` selector. Setting empty here
+# keeps the platform's `dbt run` step a no-op for this connector. When the
+# staging models (copilot__ai_dev_usage / copilot__ai_org_usage) ship in a
+# follow-up PR with `silver:class_*` tags, change this to `tag:github-copilot+`.
+dbt_select: ""
 
 connection:
   namespace: "bronze_github_copilot"
