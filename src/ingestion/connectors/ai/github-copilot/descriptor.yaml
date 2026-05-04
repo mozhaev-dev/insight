@@ -1,0 +1,15 @@
+name: github-copilot
+version: "1.0"
+type: cdk
+
+schedule: "0 2 * * *"   # daily at 02:00 UTC (data for day D available ~24h after end-of-day D UTC)
+workflow: sync
+
+# Silver routing (deferred — Bronze-only release): no Silver staging models tagged
+# silver:class_* yet. The dbt selector picks up models tagged `github-copilot` (none
+# in this iteration). When the staging models activate, they'll add the
+# silver:class_ai_dev_usage / silver:class_ai_org_usage tags.
+dbt_select: "tag:github-copilot+"
+
+connection:
+  namespace: "bronze_github_copilot"
