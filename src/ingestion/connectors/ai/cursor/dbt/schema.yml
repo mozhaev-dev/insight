@@ -50,6 +50,10 @@ models:
         description: "acceptedLinesAdded from cursor_daily_usage"
       - name: lines_removed
         description: "acceptedLinesDeleted"
+      - name: total_lines_added
+        description: "totalLinesAdded — all lines the user wrote that day (AI-accepted + manual). Cursor-specific; needed as denominator for ai_loc_share."
+      - name: total_lines_removed
+        description: "totalLinesDeleted — all lines deleted (incl. manual). Cursor-specific."
       - name: tool_use_offered
         description: "totalTabsShown"
       - name: tool_use_accepted
@@ -62,6 +66,12 @@ models:
         description: "chatRequests + composerRequests"
       - name: cost_cents
         description: "NULL in MVP (cost data lives in cursor_usage_events, per-event)"
+      - name: commits_count
+        description: "Always NULL for Cursor — Claude-Enterprise-specific column for git commits attributed to AI sessions."
+      - name: pull_requests_count
+        description: "Always NULL for Cursor — Claude-Enterprise-specific column."
+      - name: tool_action_breakdown_json
+        description: "Always NULL for Cursor — Claude-Enterprise-specific raw JSON of tool-action counts."
       - name: source
         description: "Always 'cursor'"
         tests:
@@ -76,6 +86,10 @@ models:
               arguments:
                 values: ['insight_cursor']
       - name: collected_at
+        tests:
+          - not_null
+      - name: _version
+        description: "ReplacingMergeTree version — toUnixTimestamp64Milli(_airbyte_extracted_at) per ADR-0001."
         tests:
           - not_null
 

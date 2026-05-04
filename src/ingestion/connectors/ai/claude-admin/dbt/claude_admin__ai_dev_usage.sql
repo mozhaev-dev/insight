@@ -17,19 +17,34 @@
 --                              maps api_key_id → person_id.
 --
 -- Note: Claude Code usage is also present in Enterprise data
--- (claude_enterprise_users.code_*) but we source it exclusively from Admin per
--- the lead's rule — data available in common Admin API is always sourced
--- from there to avoid double counting.
+-- (claude_enterprise_users.code_*). For orgs on the Enterprise subscription,
+-- Enterprise is now the canonical feed for class_ai_dev_usage — see
+-- claude_enterprise__ai_dev_usage.sql. Admin's claude_admin_code_usage is
+-- retained here only to keep the staging table populated for downstream
+-- joins / debugging; it is no longer tagged for silver:class_ai_dev_usage,
+-- so it does not double-count via union_by_tag. Admin remains tagged for
+-- silver:class_ai_api_usage (token-level metrics Enterprise does not publish).
+--
+-- Why prefer Enterprise here:
+--   • user-grain attribution out of the box (user_email) — Admin reports
+--     api_actor for 100% of activity in real-world data, requiring an extra
+--     api_key_name → api_key_id → person_id resolution step.
+--   • Enterprise also exposes adjacent surfaces (chat, cowork, office)
+--     that Admin's code_usage endpoint does not.
 --
 -- Aggregation: Bronze has one row per (date, actor_identifier, terminal_type)
 -- — we aggregate across terminal_type to match class_ai_dev_usage granularity
 -- (tenant, email|api_key_id, day, tool).
 {{ config(
     materialized='incremental',
+    incremental_strategy='append',
     unique_key='unique_key',
+    engine='ReplacingMergeTree(_version)',
     order_by=['unique_key'],
+    on_schema_change='append_new_columns',
+    settings={'allow_nullable_key': 1},
     schema='staging',
-    tags=['claude-admin', 'silver:class_ai_dev_usage']
+    tags=['claude-admin']
 ) }}
 
 WITH usage_agg AS (
@@ -88,15 +103,25 @@ SELECT
     toUInt32(u.sessions_sum)                                AS session_count,
     toUInt32(u.lines_added_sum)                             AS lines_added,
     toUInt32(u.lines_removed_sum)                           AS lines_removed,
+    -- total_lines_added/removed: Admin code_usage doesn't expose total keystrokes. NULL.
+    CAST(NULL AS Nullable(UInt32))                          AS total_lines_added,
+    CAST(NULL AS Nullable(UInt32))                          AS total_lines_removed,
     toUInt32(u.tool_accepted_sum + u.tool_rejected_sum)     AS tool_use_offered,
     toUInt32(u.tool_accepted_sum)                           AS tool_use_accepted,
     CAST(NULL AS Nullable(UInt32))                          AS completions_count,
     CAST(NULL AS Nullable(UInt32))                          AS agent_sessions,
     CAST(NULL AS Nullable(UInt32))                          AS chat_requests,
     CAST(NULL AS Nullable(UInt32))                          AS cost_cents,
+    -- CE-specific columns — NULL for Admin (Admin code_usage does not expose git attribution).
+    CAST(NULL AS Nullable(UInt32))                          AS commits_count,
+    CAST(NULL AS Nullable(UInt32))                          AS pull_requests_count,
+    CAST(NULL AS Nullable(String))                          AS tool_action_breakdown_json,
     'claude_admin'                                          AS source,
     'insight_claude_admin'                                  AS data_source,
-    CAST(u.collected_at_max AS Nullable(DateTime64(3)))     AS collected_at
+    CAST(u.collected_at_max AS Nullable(DateTime64(3)))     AS collected_at,
+    -- _version: aggregating model uses max(collected_at) as version proxy (epoch-ms).
+    -- NULL collected_at falls back to 0 to keep _version non-nullable.
+    coalesce(toUnixTimestamp64Milli(u.collected_at_max), toUInt64(0)) AS _version
 FROM usage_agg u
 LEFT JOIN api_keys k
     ON u.actor_type = 'api_actor'

@@ -5,7 +5,7 @@ name = "InsightSpec"
 slug = "insightspec"
 kit = "sdlc"
 codebase = ["docs"]
-children = ["ir", "person", "orgchart"]
+children = ["ir", "person", "orgchart", "metric-cat", "dataflow"]
 
 [[systems.artifacts]]
 kind = "DESIGN"
@@ -389,6 +389,18 @@ traceability = "DOCS-ONLY"
 
 [[systems.artifacts]]
 kind = "PRD"
+path = "docs/components/deployment/specs/PRD.md"
+name = "Deployment PRD"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/components/deployment/specs/DESIGN.md"
+name = "Deployment Design"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "PRD"
 path = "docs/components/backend/specs/PRD.md"
 name = "Backend PRD"
 traceability = "DOCS-ONLY"
@@ -409,6 +421,30 @@ traceability = "DOCS-ONLY"
 kind = "DESIGN"
 path = "docs/components/backend/specs/DESIGN.md"
 name = "Backend Architecture"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/components/backend/api-gateway/bff/PRD.md"
+name = "BFF (Backend-for-Frontend) PRD"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/components/backend/api-gateway/bff/DESIGN.md"
+name = "BFF Architecture"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/components/backend/api-gateway/router/PRD.md"
+name = "API Gateway Router PRD"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/components/backend/api-gateway/router/DESIGN.md"
+name = "API Gateway Router Architecture"
 traceability = "DOCS-ONLY"
 
 [[systems.artifacts]]
@@ -506,4 +542,54 @@ name = "Org-Chart Domain Design"
 kind = "PRD"
 path = "docs/domain/org-chart/specs/PRD.md"
 name = "Org-Chart Domain PRD"
+traceability = "DOCS-ONLY"
+
+[[systems]]
+name = "Ingestion Data Flow"
+slug = "dataflow"
+kit = "sdlc"
+codebase = ["docs/domain/ingestion-data-flow", "src/ingestion"]
+children = []
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/domain/ingestion-data-flow/specs/DESIGN.md"
+name = "Ingestion Data Flow Design"
+traceability = "FULL"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/domain/ingestion-data-flow/specs/ADR/0001-rmt-with-version-and-unique-key.md"
+name = "ADR-0001: ReplacingMergeTree(_version) + ORDER BY (unique_key)"
+traceability = "FULL"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/domain/ingestion-data-flow/specs/ADR/0002-promote-bronze-to-rmt.md"
+name = "ADR-0002: Promote bronze MergeTree → RMT on first dbt run"
+traceability = "FULL"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/domain/ingestion-data-flow/specs/ADR/0003-ephemeral-rust-passthrough.md"
+name = "ADR-0003: Ephemeral materialization for Rust-owned staging pass-through"
+traceability = "FULL"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/domain/ingestion-data-flow/specs/ADR/0004-unique-key-formula.md"
+name = "ADR-0004: unique_key formula"
+traceability = "FULL"
+
+[[systems]]
+name = "Metric Catalog"
+slug = "metric-cat"
+kit = "sdlc"
+codebase = ["docs/domain/metric-catalog"]
+children = []
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/domain/metric-catalog/specs/PRD.md"
+name = "Metric Catalog PRD"
 traceability = "DOCS-ONLY"

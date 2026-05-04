@@ -29,7 +29,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use modkit::api::{OpenApiRegistry, OperationBuilder};
+use modkit::api::{OpenApiRegistry, OperationBuilder, Problem};
 use modkit::context::ModuleCtx;
 use modkit::contracts::{Module, RestApiCapability};
 use serde::Deserialize;
@@ -165,8 +165,48 @@ impl RestApiCapability for ProxyModule {
             );
         }
 
+        // Authenticated 404 fallback. Anything that doesn't match a configured
+        // proxy route, a public endpoint (e.g. /v1/auth/config), or a health
+        // probe falls through to here. The route is registered as
+        // `authenticated()` so modkit short-circuits to 401 for missing/invalid
+        // tokens before the handler runs — only authenticated callers learn
+        // that a path doesn't exist. This closes a topology-leak gap where
+        // the framework's default fallback returns 404 without auth.
+        let fallback_methods = [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+        ];
+        for method in fallback_methods {
+            let handler =
+                move |_req: Request<Body>| async move { not_found_problem().into_response() };
+            router = OperationBuilder::new(method.clone(), "/{*rest}")
+                .summary("Authenticated 404 fallback")
+                .authenticated()
+                .no_license_required()
+                .json_response(StatusCode::NOT_FOUND, "Not found")
+                .handler(handler)
+                .register(router, openapi);
+        }
+        tracing::info!("registered authenticated 404 fallback for unmatched paths");
+
         Ok(router)
     }
+}
+
+/// RFC 9457 Problem for unmatched paths. Returned only after auth has
+/// already validated the token; unauthenticated callers get 401 from the
+/// auth middleware before reaching this handler.
+fn not_found_problem() -> Problem {
+    Problem::new(
+        StatusCode::NOT_FOUND,
+        "Not Found",
+        "no route matches this path",
+    )
+    .with_type("urn:insight:error:not_found")
+    .with_code("not_found")
 }
 
 /// Register an authenticated proxy route via `OperationBuilder`.
@@ -222,17 +262,14 @@ async fn proxy_handler(state: Arc<ProxyState>, req: Request<Body>) -> Response {
                 error = %e,
                 "proxy request failed"
             );
-            (
+            Problem::new(
                 StatusCode::BAD_GATEWAY,
-                serde_json::json!({
-                    "type": "urn:insight:error:bad_gateway",
-                    "title": "Bad Gateway",
-                    "status": 502,
-                    "detail": "upstream service unavailable"
-                })
-                .to_string(),
+                "Bad Gateway",
+                "upstream service unavailable",
             )
-                .into_response()
+            .with_type("urn:insight:error:bad_gateway")
+            .with_code("bad_gateway")
+            .into_response()
         }
     }
 }
@@ -311,4 +348,82 @@ fn is_hop_by_hop(name: &str) -> bool {
             | "upgrade"
             | "host"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[tokio::test]
+    async fn not_found_problem_conforms_to_rfc9457() -> TestResult {
+        let response = not_found_problem().into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // RFC 9457 §3 mandates application/problem+json — modkit::api::Problem
+        // sets this automatically; assert it so we catch any regression.
+        let ct = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .ok_or("content-type missing")?;
+        assert_eq!(ct, "application/problem+json");
+
+        let body = to_bytes(response.into_body(), 4096).await?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+
+        assert_eq!(json["status"], 404);
+        assert_eq!(json["title"], "Not Found");
+        assert_eq!(json["type"], "urn:insight:error:not_found");
+        assert_eq!(json["code"], "not_found");
+        assert!(json["detail"].is_string());
+        Ok(())
+    }
+
+    /// Verifies the routing precedence assumption the fallback relies on:
+    /// a wildcard `/{*rest}` at the root must NOT shadow a more specific
+    /// `/configured/{*rest}` route. If Axum ever changes this rule, the
+    /// fallback would start hijacking proxy traffic and this test fires.
+    #[tokio::test]
+    async fn fallback_does_not_intercept_configured_routes() -> TestResult {
+        let app = Router::new()
+            .route(
+                "/configured/{*rest}",
+                get(|| async { (StatusCode::OK, "configured") }),
+            )
+            .route(
+                "/{*rest}",
+                get(|| async { not_found_problem().into_response() }),
+            );
+
+        // Configured route → handler
+        let req = axum::http::Request::builder()
+            .uri("/configured/v1/anything")
+            .body(Body::empty())?;
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 4096).await?;
+        assert_eq!(&body[..], b"configured");
+
+        // Unmatched path → fallback 404 (RFC 9457 problem+json)
+        let req = axum::http::Request::builder()
+            .uri("/unknown/foo/bar")
+            .body(Body::empty())?;
+        let resp = app.oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .ok_or("content-type missing")?;
+        assert_eq!(ct, "application/problem+json");
+        let body = to_bytes(resp.into_body(), 4096).await?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        assert_eq!(json["status"], 404);
+        assert_eq!(json["type"], "urn:insight:error:not_found");
+        Ok(())
+    }
 }

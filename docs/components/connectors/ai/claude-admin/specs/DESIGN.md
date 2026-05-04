@@ -44,7 +44,7 @@ The connector replaces two predecessor connectors (`claude-api` and `claude-team
 Two dbt Silver models ship with this connector:
 
 - `claude_admin__ai_api_usage` — Bronze `claude_admin_messages_usage` → `class_ai_api_usage` (enriched with API key names and workspace names)
-- `claude_admin__ai_dev_usage` — Bronze `claude_admin_code_usage` filtered to `actor_type = 'user'` → `class_ai_dev_usage`
+- `claude_admin__ai_dev_usage` — Bronze `claude_admin_code_usage` filtered to `actor_type = 'user'`. **Not tagged for `silver:class_ai_dev_usage` as of PR #239** — Claude Enterprise (`claude_enterprise__ai_dev_usage`) is the canonical Code feed for orgs on the Enterprise subscription (per-user attribution without api_key resolution). This model is retained as the Admin-only fallback path; activate the `silver:class_ai_dev_usage` tag for tenants without Enterprise.
 
 #### System Context
 
@@ -55,7 +55,7 @@ graph LR
     Airbyte["Airbyte Platform<br/>orchestration, state, scheduling"]
     Dest["Destination Connector<br/>ClickHouse / PostgreSQL"]
     Bronze["Bronze Layer<br/>8 tables: users, messages_usage,<br/>cost_report, code_usage, api_keys,<br/>workspaces, workspace_members, invites"]
-    Silver["Silver Layer<br/>claude_admin__ai_api_usage → class_ai_api_usage<br/>claude_admin__ai_dev_usage → class_ai_dev_usage"]
+    Silver["Silver Layer<br/>claude_admin__ai_api_usage → class_ai_api_usage<br/>claude_admin__ai_dev_usage (retained, not tagged — Enterprise is canonical Code feed)"]
 
     AnthropicAPI -->|"REST/JSON<br/>x-api-key auth"| SrcContainer
     SrcContainer -->|"RECORD messages"| Dest
@@ -288,7 +288,7 @@ src/ingestion/connectors/ai/claude-admin/
 +-- dbt/
     +-- schema.yml          # dbt source + model definitions
     +-- claude_admin__ai_api_usage.sql   # Bronze → class_ai_api_usage
-    +-- claude_admin__ai_dev_usage.sql   # Bronze → class_ai_dev_usage
+    +-- claude_admin__ai_dev_usage.sql   # Bronze → class_ai_dev_usage (untagged — Enterprise is canonical)
 ```
 
 #### Connector Package Descriptor
@@ -418,7 +418,7 @@ Reads from `claude_admin_code_usage` filtered to `WHERE actor_type = 'user'`. Ma
 | `claude_admin__ai_dev_usage` dbt model | `claude_admin_code_usage` Bronze table | SQL read |
 | Silver pipeline | Claude Admin Bronze tables | Reads `email` / `actor_identifier` + activity fields |
 | Identity Manager (Silver step 2) | `email` / `actor_identifier` fields | Resolves email → canonical `person_id` |
-| Identity seed models (`seed_persons_from_claude_admin`, `seed_aliases_from_claude_admin`, `seed_bootstrap_inputs_from_claude_admin`) | `claude_admin_users` Bronze table | SQL read for initial person / alias seeding |
+| Identity seed models (`seed_persons_from_claude_admin`, `seed_aliases_from_claude_admin`, `seed_identity_inputs_from_claude_admin`) | `claude_admin_users` Bronze table | SQL read for initial person / alias seeding |
 
 ### 3.5 External Dependencies
 
@@ -775,11 +775,11 @@ Anthropic's internal `id` fields (user ID, API key creator ID) are retained in B
 
 **Cross-platform note**: The same user typically appears in this connector (admin view), the `claude-enterprise` connector (engagement view), and IDE-tool connectors (Cursor / Windsurf). All three use `email` as the identity key and map to the same `person_id` via the Identity Manager in Silver step 2, enabling per-person aggregation across surfaces without additional join mapping.
 
-**Seed models**: Three dbt models under `src/ingestion/dbt/identity/` seed `person.persons` and `identity.aliases` / `staging.bootstrap_inputs_*` from `claude_admin_users`:
+**Seed models**: Three dbt models under `src/ingestion/dbt/identity/` seed `person.persons` and `identity.aliases` / `staging.identity_inputs_*` from `claude_admin_users`:
 
 - `seed_persons_from_claude_admin.sql`
 - `seed_aliases_from_claude_admin.sql`
-- `seed_bootstrap_inputs_from_claude_admin.sql`
+- `seed_identity_inputs_from_claude_admin.sql`
 
 These were renamed from their `claude_team` predecessors via `git mv` (history preserved).
 
@@ -837,7 +837,7 @@ Per-model token data (input / output / cache) is preserved in `model_breakdown_j
 | `claude_admin_users` | Identity Manager (`email` → `person_id`) + seed_* models | In production |
 | `claude_admin_messages_usage` | `class_ai_api_usage` | In production (via `claude_admin__ai_api_usage`) |
 | `claude_admin_cost_report` | `class_ai_api_usage` (cost enrichment) | Deferred (OQ-CADM-1) |
-| `claude_admin_code_usage` | `class_ai_dev_usage` | In production (via `claude_admin__ai_dev_usage`) |
+| `claude_admin_code_usage` | `class_ai_dev_usage` | Retained but **untagged** — Claude Enterprise (`claude_enterprise__ai_dev_usage`) is the canonical Code feed. Re-tag for Admin-only tenants. |
 | `claude_admin_api_keys` | `class_ai_api_usage` (dimension: `key_name`) | In production (JOIN) |
 | `claude_admin_workspaces` | `class_ai_api_usage` (dimension: `workspace_name`) | In production (JOIN) |
 | `claude_admin_workspace_members` | No direct target | Available for future org-structure analytics |
@@ -939,7 +939,7 @@ No new ADRs have been authored for this merged connector. The inherited decision
 - **Connector manifest**: `src/ingestion/connectors/ai/claude-admin/connector.yaml`
 - **Connector descriptor**: `src/ingestion/connectors/ai/claude-admin/descriptor.yaml`
 - **dbt source + models**: `src/ingestion/connectors/ai/claude-admin/dbt/schema.yml`, `dbt/claude_admin__ai_api_usage.sql`, `dbt/claude_admin__ai_dev_usage.sql`
-- **Identity seeds**: `src/ingestion/dbt/identity/seed_{persons,aliases,bootstrap_inputs}_from_claude_admin.sql`
+- **Identity seeds**: `src/ingestion/dbt/identity/seed_{persons,aliases,identity_inputs}_from_claude_admin.sql`
 - **Ad-hoc seeds**: `src/ingestion/scripts/adhoc/seed_from_claude_admin_manual.sql`
 - **AI Tool domain**: [docs/components/connectors/ai/](../../)
 - **Sibling connector**: [claude-enterprise](../../claude-enterprise/specs/DESIGN.md)

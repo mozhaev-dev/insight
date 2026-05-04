@@ -26,3 +26,11 @@ access
 
 # Cypilot plans (local working state)
 cypilot/.plans/
+
+# Helm packaged dependencies (resolved by `helm dependency update`)
+# Chart.lock IS committed for reproducibility — only the resolved tarballs are ignored.
+charts/*/charts/*.tgz
+charts/*/Chart.lock
+
+# dbt logs
+logs/
