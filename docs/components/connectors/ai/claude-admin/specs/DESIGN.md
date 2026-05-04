@@ -44,7 +44,7 @@ The connector replaces two predecessor connectors (`claude-api` and `claude-team
 Two dbt Silver models ship with this connector:
 
 - `claude_admin__ai_api_usage` — Bronze `claude_admin_messages_usage` → `class_ai_api_usage` (enriched with API key names and workspace names)
-- `claude_admin__ai_dev_usage` — Bronze `claude_admin_code_usage` filtered to `actor_type = 'user'` → `class_ai_dev_usage`
+- `claude_admin__ai_dev_usage` — Bronze `claude_admin_code_usage` filtered to `actor_type = 'user'`. **Not tagged for `silver:class_ai_dev_usage` as of PR #239** — Claude Enterprise (`claude_enterprise__ai_dev_usage`) is the canonical Code feed for orgs on the Enterprise subscription (per-user attribution without api_key resolution). This model is retained as the Admin-only fallback path; activate the `silver:class_ai_dev_usage` tag for tenants without Enterprise.
 
 #### System Context
 
@@ -55,7 +55,7 @@ graph LR
     Airbyte["Airbyte Platform<br/>orchestration, state, scheduling"]
     Dest["Destination Connector<br/>ClickHouse / PostgreSQL"]
     Bronze["Bronze Layer<br/>8 tables: users, messages_usage,<br/>cost_report, code_usage, api_keys,<br/>workspaces, workspace_members, invites"]
-    Silver["Silver Layer<br/>claude_admin__ai_api_usage → class_ai_api_usage<br/>claude_admin__ai_dev_usage → class_ai_dev_usage"]
+    Silver["Silver Layer<br/>claude_admin__ai_api_usage → class_ai_api_usage<br/>claude_admin__ai_dev_usage (retained, not tagged — Enterprise is canonical Code feed)"]
 
     AnthropicAPI -->|"REST/JSON<br/>x-api-key auth"| SrcContainer
     SrcContainer -->|"RECORD messages"| Dest
@@ -288,7 +288,7 @@ src/ingestion/connectors/ai/claude-admin/
 +-- dbt/
     +-- schema.yml          # dbt source + model definitions
     +-- claude_admin__ai_api_usage.sql   # Bronze → class_ai_api_usage
-    +-- claude_admin__ai_dev_usage.sql   # Bronze → class_ai_dev_usage
+    +-- claude_admin__ai_dev_usage.sql   # Bronze → class_ai_dev_usage (untagged — Enterprise is canonical)
 ```
 
 #### Connector Package Descriptor
@@ -837,7 +837,7 @@ Per-model token data (input / output / cache) is preserved in `model_breakdown_j
 | `claude_admin_users` | Identity Manager (`email` → `person_id`) + seed_* models | In production |
 | `claude_admin_messages_usage` | `class_ai_api_usage` | In production (via `claude_admin__ai_api_usage`) |
 | `claude_admin_cost_report` | `class_ai_api_usage` (cost enrichment) | Deferred (OQ-CADM-1) |
-| `claude_admin_code_usage` | `class_ai_dev_usage` | In production (via `claude_admin__ai_dev_usage`) |
+| `claude_admin_code_usage` | `class_ai_dev_usage` | Retained but **untagged** — Claude Enterprise (`claude_enterprise__ai_dev_usage`) is the canonical Code feed. Re-tag for Admin-only tenants. |
 | `claude_admin_api_keys` | `class_ai_api_usage` (dimension: `key_name`) | In production (JOIN) |
 | `claude_admin_workspaces` | `class_ai_api_usage` (dimension: `workspace_name`) | In production (JOIN) |
 | `claude_admin_workspace_members` | No direct target | Available for future org-structure analytics |

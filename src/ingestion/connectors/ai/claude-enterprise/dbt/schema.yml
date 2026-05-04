@@ -91,6 +91,8 @@ models:
               arguments:
                 values: ['insight_claude_enterprise']
       - name: collected_at
+        tests:
+          - not_null
 
   - name: claude_enterprise__ai_assistant_usage
     description: >
@@ -202,3 +204,5 @@ models:
               arguments:
                 values: ['insight_claude_enterprise']
       - name: collected_at
+        tests:
+          - not_null

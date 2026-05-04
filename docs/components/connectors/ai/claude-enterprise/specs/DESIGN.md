@@ -735,7 +735,7 @@ Per the cross-vendor source-resolution rule, Enterprise is the canonical Code fe
 | `claude_code_metrics_json` | `tool_action_breakdown_json` | Full per-tool breakdown stored as-is for downstream analytics |
 | — | `agent_sessions`, `chat_requests`, `cost_cents` | NULL — Enterprise has no Code-specific agent / chat counters; cost is org-level, not per-user |
 
-Filter: emit row only when `code_session_count > 0 OR code_lines_added > 0 OR code_tool_accepted_count > 0`.
+Filter: emit row only when any of the five Code-activity counters is positive — `code_session_count`, `code_lines_added`, `code_tool_accepted_count`, `code_commit_count`, `code_pull_request_count`. The commit/PR conditions catch days where Anthropic registers a git event without an attributed session counter.
 
 #### `claude_enterprise__ai_assistant_usage` → `class_ai_assistant_usage` (`tool='claude'`, `surface ∈ {chat, excel, powerpoint, cowork, cross}`)
 

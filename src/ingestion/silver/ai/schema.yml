@@ -238,8 +238,9 @@ models:
       Claude Enterprise chat, office (Excel/PowerPoint), cowork, and cross
       (surface-agnostic counters, currently web_search) surfaces.
       One row per (tenant, email, day, surface). Feeds Gold metrics for
-      assistant adoption: chat_active / office_active / cowork_active /
-      ai_adoption_pct (email IS NOT NULL AND conversation_count > 0).
+      assistant adoption: chat_active / excel_active / powerpoint_active /
+      cowork_active / cross_active / ai_adoption_pct (email IS NOT NULL
+      AND conversation_count > 0).
     columns:
       - name: insight_tenant_id
         description: "Tenant isolation field"

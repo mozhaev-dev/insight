@@ -37,8 +37,12 @@
 -- (tenant, email|api_key_id, day, tool).
 {{ config(
     materialized='incremental',
+    incremental_strategy='append',
     unique_key='unique_key',
+    engine='ReplacingMergeTree(_version)',
     order_by=['unique_key'],
+    on_schema_change='sync_all_columns',
+    settings={'allow_nullable_key': 1},
     schema='staging',
     tags=['claude-admin']
 ) }}
@@ -99,15 +103,25 @@ SELECT
     toUInt32(u.sessions_sum)                                AS session_count,
     toUInt32(u.lines_added_sum)                             AS lines_added,
     toUInt32(u.lines_removed_sum)                           AS lines_removed,
+    -- total_lines_added/removed: Admin code_usage doesn't expose total keystrokes. NULL.
+    CAST(NULL AS Nullable(UInt32))                          AS total_lines_added,
+    CAST(NULL AS Nullable(UInt32))                          AS total_lines_removed,
     toUInt32(u.tool_accepted_sum + u.tool_rejected_sum)     AS tool_use_offered,
     toUInt32(u.tool_accepted_sum)                           AS tool_use_accepted,
     CAST(NULL AS Nullable(UInt32))                          AS completions_count,
     CAST(NULL AS Nullable(UInt32))                          AS agent_sessions,
     CAST(NULL AS Nullable(UInt32))                          AS chat_requests,
     CAST(NULL AS Nullable(UInt32))                          AS cost_cents,
+    -- CE-specific columns — NULL for Admin (Admin code_usage does not expose git attribution).
+    CAST(NULL AS Nullable(UInt32))                          AS commits_count,
+    CAST(NULL AS Nullable(UInt32))                          AS pull_requests_count,
+    CAST(NULL AS Nullable(String))                          AS tool_action_breakdown_json,
     'claude_admin'                                          AS source,
     'insight_claude_admin'                                  AS data_source,
-    CAST(u.collected_at_max AS Nullable(DateTime64(3)))     AS collected_at
+    CAST(u.collected_at_max AS Nullable(DateTime64(3)))     AS collected_at,
+    -- _version: aggregating model uses max(collected_at) as version proxy (epoch-ms).
+    -- NULL collected_at falls back to 0 to keep _version non-nullable.
+    coalesce(toUnixTimestamp64Milli(u.collected_at_max), toUInt64(0)) AS _version
 FROM usage_agg u
 LEFT JOIN api_keys k
     ON u.actor_type = 'api_actor'
