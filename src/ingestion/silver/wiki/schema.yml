@@ -120,7 +120,12 @@ models:
         tests:
           - not_null
       - name: total_edits
-        description: "Total version rows authored on this day (multiple edits on one page count separately)"
+        description: >
+          Logical edit sessions authored on this day. Consecutive versions of
+          the same (page, author) within a 30-minute gap are collapsed into a
+          single session, so autosaves and rapid republishes do not inflate
+          the count. See `confluence__wiki_activity.sql` (issue #259) for
+          rationale and the threshold knob.
         tests:
           - not_null
       - name: pages_created
