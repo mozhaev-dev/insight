@@ -36,18 +36,26 @@
 -- participant row per session of the same logical meeting.
 --
 -- We stitch sessions sharing the same `(tenant, source, id)` whose
--- end-of-prev → start-of-next gap is ≤ `session_gap_seconds` (15 min) into
+-- end-of-prev → start-of-next gap is ≤ `session_gap_seconds` (5 min) into
 -- a single `logical_meeting_id`. Recurring meetings that legitimately reuse
 -- an `id` end up in different clusters because their gaps are hours/days,
 -- not minutes. `meetings_attended` then counts distinct logical meetings
 -- per user per day instead of distinct participant rows.
+--
+-- Threshold choice (300 s / 5 min): observed host-drop rejoin gaps in
+-- production are 11–147 s. 300 s provides a safety margin while keeping
+-- the window well below the ≥ 5-min buffer typically inserted between
+-- separate back-to-back meetings on the same PMI. Back-to-back PMI
+-- sessions with < 5-min gap between them will still be merged — this is a
+-- known trade-off documented in issue #258. If the organisation consistently
+-- schedules back-to-back calls with < 5-min transitions, lower this value.
 --
 -- Durations (`audio_duration_seconds`, `video_duration_seconds`,
 -- `screen_share_duration_seconds`) are NOT affected — they sum real
 -- per-participant join/leave intervals, which are correct to add across
 -- split sessions (the user really was in-call during both halves).
 
-{% set session_gap_seconds = 900 %}
+{% set session_gap_seconds = 300 %}
 
 WITH meetings_dedup AS (
     -- Drop bronze re-emit duplicates (same uuid emitted multiple times by
@@ -122,6 +130,22 @@ meetings_logical AS (
         has_screen_share,
         concat(id, '#', toString(cluster_idx)) AS logical_meeting_id
     FROM meetings_clustered
+),
+
+participants_dedup AS (
+    -- Drop bronze re-emit duplicates for participants (same logic as
+    -- meetings_dedup above). Bronze Airbyte re-emits produce multiple
+    -- identical rows per (meeting_uuid, participant_uuid, join_time);
+    -- without dedup, SUM(duration) is inflated by the re-emit factor.
+    SELECT *
+    FROM (
+        SELECT *
+        FROM {{ source('bronze_zoom', 'participants') }}
+        WHERE join_time IS NOT NULL
+          AND email IS NOT NULL AND email != ''
+        ORDER BY _airbyte_extracted_at DESC
+        LIMIT 1 BY meeting_uuid, participant_uuid, join_time
+    ) AS deduped
 )
 
 SELECT
@@ -163,26 +187,27 @@ SELECT
         if(p.join_time IS NOT NULL AND p.leave_time IS NOT NULL,
            dateDiff('second', parseDateTimeBestEffort(p.join_time), parseDateTimeBestEffort(p.leave_time)),
            0),
-        ml.has_video = true
+        -- coalesce guards against JOIN miss (ml NULL): NULL = true → NULL in
+        -- ClickHouse, which sumIf skips, silently zeroing video duration.
+        -- On a JOIN miss (meeting row not yet synced) we treat the session as
+        -- non-video rather than dropping its duration entirely.
+        coalesce(ml.has_video, false)
     )) AS video_duration_seconds,
     toInt64(sumIf(
         if(p.join_time IS NOT NULL AND p.leave_time IS NOT NULL,
            dateDiff('second', parseDateTimeBestEffort(p.join_time), parseDateTimeBestEffort(p.leave_time)),
            0),
-        ml.has_screen_share = true
+        coalesce(ml.has_screen_share, false)
     )) AS screen_share_duration_seconds,
     CAST(NULL AS Nullable(String)) AS report_period,
     now() AS collected_at,
     'insight_zoom' AS data_source,
     toUnixTimestamp64Milli(now64()) AS _version
-FROM {{ source('bronze_zoom', 'participants') }} p
+FROM participants_dedup p
 LEFT JOIN meetings_logical ml
     ON p.meeting_uuid = ml.uuid
     AND p.tenant_id = ml.tenant_id
     AND p.source_id = ml.source_id
-WHERE p.join_time IS NOT NULL
-  AND p.email IS NOT NULL
-  AND p.email != ''
 GROUP BY
     p.tenant_id,
     p.source_id,
