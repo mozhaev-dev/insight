@@ -46,7 +46,9 @@ echo "=== Running ClickHouse migrations ==="
 for migration in "$SCRIPT_DIR/migrations"/*.sql; do
   [ -f "$migration" ] || continue
   echo "  $(basename "$migration")"
-  grep -v '^\s*--' "$migration" | ch_exec_stdin --multiquery
+  # `sed` instead of `grep -v` so a comment-only migration (matching every
+  # line) does not return exit 1 and abort the pipeline under `set -o pipefail`.
+  sed -E '/^[[:space:]]*--/d' "$migration" | ch_exec_stdin --multiquery
 done
 
 # MariaDB migrations: each backend service now owns and applies its own

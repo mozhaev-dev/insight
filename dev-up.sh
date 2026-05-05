@@ -318,7 +318,7 @@ JIRA_ENRICH_IMAGE_REF="${INGESTION_JIRA_ENRICH_IMAGE:-insight-jira-enrich:local}
 if [[ "$COMPONENT" == "all" || "$COMPONENT" == "ingestion" ]] && [[ "$BUILD_IMAGES" == "true" ]]; then
   echo "=== Building ingestion-template images ==="
   TOOLBOX_IMAGE="$TOOLBOX_IMAGE_REF" "$ROOT_DIR/src/ingestion/tools/toolbox/build.sh"
-  IMAGE_TAG="${JIRA_ENRICH_IMAGE_REF##*:}" KIND_CLUSTER="$CLUSTER_NAME" \
+  JIRA_ENRICH_IMAGE="$JIRA_ENRICH_IMAGE_REF" KIND_CLUSTER="$CLUSTER_NAME" \
     "$ROOT_DIR/src/ingestion/connectors/task-tracking/jira/enrich/build.sh"
 fi
 

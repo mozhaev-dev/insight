@@ -22,7 +22,7 @@ yet, so every silver-dependent migration fails immediately — before
 init.sh can even register the dbt-run Argo workflow that would build
 the missing tables. This is a circular dependency:
 
-```
+```text
 init.sh
   └─ run migrations            ← needs silver
   └─ register dbt-run workflow

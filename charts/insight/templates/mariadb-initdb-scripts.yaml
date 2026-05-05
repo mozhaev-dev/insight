@@ -22,10 +22,18 @@ metadata:
   labels:
     {{- include "insight.labels" . | nindent 4 }}
 data:
+  {{- /* Identity service owns its own MariaDB database (ADR-0006). The
+         init-db SQL is gated on identityResolution.deploy so installs
+         that disable identityResolution don't trigger required() on
+         identityResolution.databaseName and don't emit dead SQL. The
+         outer `if .Values.mariadb.deploy` keeps the whole ConfigMap
+         conditional on the bundled subchart being active. */}}
+  {{- if .Values.identityResolution.deploy }}
   identity-db.sql: |
     CREATE DATABASE IF NOT EXISTS `{{ required "identityResolution.databaseName is required" .Values.identityResolution.databaseName }}`
       CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     GRANT ALL PRIVILEGES ON `{{ .Values.identityResolution.databaseName }}`.*
       TO '{{ required "mariadb.username is required" .Values.mariadb.username }}'@'%';
     FLUSH PRIVILEGES;
+  {{- end }}
 {{- end }}
