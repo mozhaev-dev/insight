@@ -34,8 +34,19 @@ if ! kubectl get -n "$INSIGHT_NS" "$CH_POD" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Resolve the configured ClickHouse database name from the
+# `insight-platform` ConfigMap (or CLICKHOUSE_DATABASE env override). The
+# umbrella chart's `clickhouse.database` value drives both the bitnami
+# subchart's CREATE DATABASE on first boot AND every consumer (Airbyte
+# destination, analytics-api DSN, …) — keeping this loop in lock-step
+# means a non-default `clickhouse.database` no longer breaks first-run
+# init by silently creating the wrong DB. `staging` and `silver` are
+# project-internal dbt schemas, those names are stable.
+CH_DB="${CLICKHOUSE_DATABASE:-$(kubectl get configmap -n "$INSIGHT_NS" insight-platform -o jsonpath='{.data.CLICKHOUSE_DATABASE}' 2>/dev/null)}"
+CH_DB="${CH_DB:-insight}"
+
 echo "=== Creating dbt databases ==="
-for db in staging silver insight; do
+for db in staging silver "$CH_DB"; do
   ch_exec --query "CREATE DATABASE IF NOT EXISTS $db"
 done
 
