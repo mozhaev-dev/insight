@@ -30,7 +30,7 @@ apply_tenant() {
   python3 - "$tenant_config" "$CONNECTORS_DIR" \
     "$AIRBYTE_API" "$AIRBYTE_TOKEN" "$WORKSPACE_ID" \
     "$STATE_FILE" "$tenant" <<'PYTHON'
-import sys, os, json, yaml, urllib.request, urllib.error, pathlib, subprocess, base64
+import sys, os, json, yaml, urllib.request, urllib.error, pathlib, subprocess, base64, shlex
 
 tenant_config_path = sys.argv[1]
 connectors_dir     = sys.argv[2]
@@ -206,7 +206,29 @@ def resolve_clickhouse_password():
         sys.exit(1)
     return base64.b64decode(result.stdout.strip()).decode()
 
+def _resolve_platform_value(env_name, configmap_key):
+    """Read a ClickHouse coordinate (USER, DATABASE) from env var first, then from
+    the umbrella's `insight-platform` ConfigMap in the release namespace. Fail
+    fast if neither path resolves — there is no safe ClickHouse default
+    (the bundled subchart creates the operator-named user, NOT `default`)."""
+    env_val = os.environ.get(env_name)
+    if env_val:
+        return env_val
+    result = subprocess.run(
+        ["kubectl", "get", "configmap", "insight-platform", "-n", INSIGHT_NAMESPACE,
+         "-o", f"jsonpath={{.data.{configmap_key}}}"],
+        capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        print(f"ERROR: {configmap_key} not found in ConfigMap insight-platform "
+              f"(namespace '{INSIGHT_NAMESPACE}')", file=sys.stderr)
+        print(f"  Set the {env_name} env var or ensure the umbrella chart is installed.", file=sys.stderr)
+        sys.exit(1)
+    return result.stdout.strip()
+
 ch_password = resolve_clickhouse_password()
+ch_username = _resolve_platform_value("CLICKHOUSE_USER", "CLICKHOUSE_USER")
+ch_database = _resolve_platform_value("CLICKHOUSE_DATABASE", "CLICKHOUSE_DATABASE")
 
 # ---------------------------------------------------------------------------
 # ClickHouse destination definition ID (Airbyte built-in)
@@ -229,17 +251,16 @@ state_set(state, "destinations.clickhouse.definition_id", ch_def_id)
 # ---------------------------------------------------------------------------
 shared_dest_name = "clickhouse"
 shared_dest_id = state_get(state, "destinations.clickhouse.id")
-# RULE-DEFAULTS-OK: cluster ClickHouse coordinates are platform constants here.
-# `host` is derived from the operator-supplied INSIGHT_NAMESPACE following the
-# umbrella chart's service-name convention; `port`, `database`, and `username`
-# are ClickHouse-side protocol/built-in defaults, not insight policy. If a tenant
-# ever needs a non-standard CH instance, plumb it explicitly through the chart
-# rather than re-introducing a `dest_config.get(..., default)` fallback here.
+# `host` is the umbrella service-name convention (insight-clickhouse.<ns>.svc).
+# `username` and `database` are read from the `insight-platform` ConfigMap (or
+# CLICKHOUSE_USER / CLICKHOUSE_DATABASE env vars) — the bundled subchart's
+# initdb creates the operator-named user, NOT `default`, so a hard-coded
+# "default" here would always fail destination check on a fresh cluster.
 ch_config = {
     "host": f"insight-clickhouse.{INSIGHT_NAMESPACE}.svc.cluster.local",
     "port": "8123",
-    "database": "default",
-    "username": "default",
+    "database": ch_database,
+    "username": ch_username,
     "password": ch_password,
     "protocol": "http",
     "enable_json": True,
@@ -335,14 +356,19 @@ for connector_name, source_id_label, config in connector_instances:
     # tenants.<tenant_key>.connectors.<connector_name>.<source_id_label>.connection_id
     tenant_connector_path = f"tenants.{tenant_key}.connectors.{connector_name}.{source_id_label}"
 
-    # Create ClickHouse database
+    # Create ClickHouse database. Single-namespace model (PR #224): the
+    # bundled ClickHouse runs as a StatefulSet in INSIGHT_NAMESPACE and
+    # picks up CLICKHOUSE_USER/CLICKHOUSE_PASSWORD from the container env
+    # (auth.existingSecret), so we don't pass --password here. check=True
+    # surfaces kubectl/clickhouse failures instead of silently swallowing
+    # them and continuing with a missing bronze DB.
     db_name = descriptor.get("connection", {}).get("namespace", f"bronze_{connector_name}")
     print(f"    Creating database: {db_name}")
     subprocess.run(
-        ["kubectl", "exec", "-n", "data", "deploy/clickhouse", "--",
-         "clickhouse-client", "--password", ch_password,
+        ["kubectl", "exec", "-n", INSIGHT_NAMESPACE, "statefulset/insight-clickhouse", "--",
+         "clickhouse-client",
          "--query", f"CREATE DATABASE IF NOT EXISTS {db_name}"],
-        capture_output=True, timeout=30
+        capture_output=True, text=True, timeout=30, check=True,
     )
 
     # --- Source definition ID (from state) ---
@@ -478,9 +504,17 @@ for connector_name, source_id_label, config in connector_instances:
 state_set(state, "workspace_id", workspace_id)
 save_state(state)
 
-# Mirror to ConfigMap when running in-cluster
+# Mirror to ConfigMap when running in-cluster. Use INSIGHT_NAMESPACE
+# (single-namespace model from PR #224, replacing the legacy `data` ns)
+# and surface failures via check=True instead of silencing kubectl stderr.
 if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
-    os.system(f'kubectl create configmap airbyte-state --from-file=state.yaml={state_path} -n data --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null')
+    subprocess.run(
+        f"kubectl create configmap airbyte-state "
+        f"--from-file=state.yaml={shlex.quote(state_path)} "
+        f"-n {shlex.quote(INSIGHT_NAMESPACE)} --dry-run=client -o yaml "
+        f"| kubectl apply -f -",
+        shell=True, check=True,
+    )
 
 print(f"  State saved: {state_path}")
 PYTHON

@@ -47,12 +47,18 @@ fi
 # silently produce an exported but invalid AIRBYTE_TOKEN. With `set -e`,
 # `export AIRBYTE_TOKEN=$(node ...)` masks the node exit status because
 # the assignment to a builtin's argument is what set -e checks.
-_token=$(node -e "
+# Pass _jwt_secret via env var (JWT_SECRET) instead of string-interpolating it
+# into the JS source. The secret is base64-decoded raw bytes from the
+# Bitnami-generated airbyte-auth-secrets Secret and can contain `'`, `\`,
+# newline, or `${...}` sequences — interpolation either breaks the JS parse
+# or, worse, mutates the HMAC input. process.env reads the bytes verbatim.
+# Bonus: the secret no longer appears in `ps` listings or `set -x` traces.
+_token=$(JWT_SECRET="$_jwt_secret" node -e "
   const c=require('crypto');
   const h=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');
   const n=Math.floor(Date.now()/1000);
   const p=Buffer.from(JSON.stringify({iss:'airbyte-server',sub:'00000000-0000-0000-0000-000000000000',iat:n,exp:n+${_token_ttl}})).toString('base64url');
-  const s=c.createHmac('sha256','${_jwt_secret}').update(h+'.'+p).digest('base64url');
+  const s=c.createHmac('sha256',process.env.JWT_SECRET).update(h+'.'+p).digest('base64url');
   console.log(h+'.'+p+'.'+s);
 ")
 if [[ -z "$_token" ]]; then
