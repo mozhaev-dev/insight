@@ -350,19 +350,105 @@ CREATE TABLE IF NOT EXISTS silver.class_task_daily (
 SQL
 fi
 
-# silver.class_task_field_history — task-tracking dbt model.
+# silver.class_task_field_history — task-tracking event-sourced field history
+# (per ADR-005). Schema mirrors the canonical staging table built by the
+# `create_task_field_history_staging` macro (see src/ingestion/dbt/macros/) —
+# silver is a thin SELECT * from staging via union_by_tag so the target
+# columns match. Migrations like 20260427120000_views-from-silver.sql and
+# 20260429000000_task-delivery-silver-rewrite.sql aggregate over
+# (insight_source_id, data_source, issue_id, event_at, _version, field_id,
+# value_displays, value_ids, delta_action, event_kind) so all of these
+# need to exist in the placeholder for CREATE VIEW to type-check.
 if ! ch_table_exists silver class_task_field_history; then
   echo "  Creating placeholder: silver.class_task_field_history"
   run_ch <<'SQL'
 CREATE TABLE IF NOT EXISTS silver.class_task_field_history (
+    unique_key          String,
+    insight_source_id   String,
+    data_source         String,
+    issue_id            String,
+    id_readable         String,
+    event_id            String,
+    event_at            DateTime64(3),
+    event_kind          Enum8('changelog' = 1, 'synthetic_initial' = 2),
+    _seq                UInt32,
+    author_id           Nullable(String),
+    author_display      Nullable(String),
+    field_id            String,
+    field_name          String,
+    field_cardinality   Enum8('single' = 1, 'multi' = 2),
+    delta_action        Enum8('set' = 1, 'add' = 2, 'remove' = 3),
+    delta_value_id      Nullable(String),
+    delta_value_display Nullable(String),
+    value_ids           Array(String),
+    value_displays      Array(String),
+    value_id_type       Enum8('opaque_id' = 1, 'account_id' = 2, 'string_literal' = 3, 'path' = 4, 'none' = 5),
+    collected_at        DateTime64(3),
+    _version            UInt64
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
+SQL
+fi
+
+# silver.class_task_users — task-tracking user directory (anchor for identity
+# resolution). Referenced by `views-from-silver.sql` LEFT JOIN to look up
+# `email` by `(insight_source_id, user_id)` for the assignee_email column.
+if ! ch_table_exists silver class_task_users; then
+  echo "  Creating placeholder: silver.class_task_users"
+  run_ch <<'SQL'
+CREATE TABLE IF NOT EXISTS silver.class_task_users (
     insight_tenant_id String,
-    issue_id          String,
-    field_name        String,
-    old_value         String,
-    new_value         String,
-    changed_at        DateTime,
+    insight_source_id String,
+    user_id           String,
+    email             Nullable(String),
+    unique_key        String,
     _version          UInt64
-) ENGINE = ReplacingMergeTree(_version) ORDER BY (issue_id, changed_at) COMMENT 'INSIGHT_PLACEHOLDER_v1';
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
+SQL
+fi
+
+# silver.class_task_worklogs — task-tracking worklog rows. Referenced by
+# `views-from-silver.sql` for time-spent aggregations
+# (author_email/author_id, work_date, duration_seconds/worklog_seconds).
+if ! ch_table_exists silver class_task_worklogs; then
+  echo "  Creating placeholder: silver.class_task_worklogs"
+  run_ch <<'SQL'
+CREATE TABLE IF NOT EXISTS silver.class_task_worklogs (
+    insight_tenant_id String,
+    insight_source_id String,
+    worklog_id        String,
+    issue_id          Nullable(String),
+    author_id         Nullable(String),
+    author_email      Nullable(String),
+    work_date         Nullable(Date),
+    duration_seconds  Nullable(Float64),
+    worklog_seconds   Nullable(Float64),
+    unique_key        String,
+    _version          UInt64
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
+SQL
+fi
+
+# silver.class_wiki_activity — per-user per-day wiki edit activity. Referenced
+# by 20260505000000_drop-confluence-minor-edits.sql (ALTER TABLE DROP COLUMN
+# IF EXISTS) — ALTER fails with UNKNOWN_TABLE if the silver target itself
+# does not exist on a fresh cluster.
+if ! ch_table_exists silver class_wiki_activity; then
+  echo "  Creating placeholder: silver.class_wiki_activity"
+  run_ch <<'SQL'
+CREATE TABLE IF NOT EXISTS silver.class_wiki_activity (
+    tenant_id     String,
+    source_id     String,
+    unique_key    String,
+    author_id     String,
+    author_email  Nullable(String),
+    day           Date,
+    pages_edited  Nullable(UInt32),
+    total_edits   Nullable(UInt32),
+    pages_created Nullable(UInt32),
+    major_edits   Nullable(UInt32),
+    minor_edits   Nullable(UInt32),
+    _version      UInt64
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key COMMENT 'INSIGHT_PLACEHOLDER_v1';
 SQL
 fi
 
