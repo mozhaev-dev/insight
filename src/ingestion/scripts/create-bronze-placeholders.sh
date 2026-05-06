@@ -200,6 +200,78 @@ CREATE TABLE IF NOT EXISTS silver.class_ai_dev_usage (
 SQL
 fi
 
+# silver.class_ai_api_usage — programmatic AI API token usage (Claude Admin
+# messages_usage; future OpenAI). Schema mirrors `silver/ai/class_ai_api_usage`
+# dbt model order_by=['unique_key'] config — email is always NULL by design
+# (API keys can't be attributed to users at request time; resolution happens
+# in Silver Step 2 via api_key_id → person_id). dbt drops & replaces this
+# placeholder on first run.
+if ! ch_table_exists silver class_ai_api_usage; then
+  echo "  Creating placeholder: silver.class_ai_api_usage"
+  run_ch <<'SQL'
+CREATE TABLE IF NOT EXISTS silver.class_ai_api_usage (
+    insight_tenant_id     Nullable(String),
+    source_id             Nullable(String),
+    unique_key            String,
+    email                 Nullable(String),
+    api_key_id            Nullable(String),
+    workspace_id          Nullable(String),
+    day                   Nullable(Date),
+    provider              String,
+    channel               String,
+    input_tokens          Nullable(UInt64),
+    output_tokens         Nullable(UInt64),
+    cache_read_tokens     Nullable(UInt64),
+    cache_creation_tokens Nullable(UInt64),
+    cost_amount           Nullable(Decimal(18, 4)),
+    cost_currency         Nullable(String),
+    source                String,
+    data_source           String,
+    collected_at          Nullable(DateTime64(3)),
+    _version              UInt64
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key;
+SQL
+fi
+
+# silver.class_ai_assistant_usage — per-person per-day AI assistant surface
+# usage (Claude Enterprise chat / cowork / office / cross). One row per
+# (tenant, email, day, surface). Schema mirrors `silver/ai/class_ai_assistant_usage`
+# dbt model order_by=['unique_key'] config. dbt drops & replaces this
+# placeholder on first run.
+if ! ch_table_exists silver class_ai_assistant_usage; then
+  echo "  Creating placeholder: silver.class_ai_assistant_usage"
+  run_ch <<'SQL'
+CREATE TABLE IF NOT EXISTS silver.class_ai_assistant_usage (
+    insight_tenant_id        String,
+    source_id                String,
+    unique_key               String,
+    email                    String,
+    day                      Date,
+    tool                     String,
+    surface                  String,
+    session_count            Nullable(UInt32),
+    conversation_count       Nullable(UInt32),
+    message_count            Nullable(UInt32),
+    action_count             Nullable(UInt32),
+    files_uploaded_count     Nullable(UInt32),
+    artifacts_created_count  Nullable(UInt32),
+    projects_created_count   Nullable(UInt32),
+    projects_used_count      Nullable(UInt32),
+    skills_used_count        Nullable(UInt32),
+    connectors_used_count    Nullable(UInt32),
+    thinking_message_count   Nullable(UInt32),
+    dispatch_turn_count      Nullable(UInt32),
+    search_count             Nullable(UInt32),
+    cost_cents               Nullable(UInt32),
+    surface_metrics_json     Nullable(String),
+    source                   String,
+    data_source              String,
+    collected_at             Nullable(DateTime64(3)),
+    _version                 UInt64
+) ENGINE = ReplacingMergeTree(_version) ORDER BY unique_key;
+SQL
+fi
+
 # silver.class_git_commits — git dbt model.
 if ! ch_table_exists silver class_git_commits; then
   echo "  Creating placeholder: silver.class_git_commits"
