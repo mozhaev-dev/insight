@@ -30,7 +30,7 @@ apply_tenant() {
   python3 - "$tenant_config" "$CONNECTORS_DIR" \
     "$AIRBYTE_API" "$AIRBYTE_TOKEN" "$WORKSPACE_ID" \
     "$STATE_FILE" "$tenant" <<'PYTHON'
-import sys, os, json, yaml, urllib.request, urllib.error, pathlib, subprocess, base64
+import sys, os, json, yaml, urllib.request, urllib.error, pathlib, subprocess, base64, shlex
 
 tenant_config_path = sys.argv[1]
 connectors_dir     = sys.argv[2]
@@ -356,14 +356,19 @@ for connector_name, source_id_label, config in connector_instances:
     # tenants.<tenant_key>.connectors.<connector_name>.<source_id_label>.connection_id
     tenant_connector_path = f"tenants.{tenant_key}.connectors.{connector_name}.{source_id_label}"
 
-    # Create ClickHouse database
+    # Create ClickHouse database. Single-namespace model (PR #224): the
+    # bundled ClickHouse runs as a StatefulSet in INSIGHT_NAMESPACE and
+    # picks up CLICKHOUSE_USER/CLICKHOUSE_PASSWORD from the container env
+    # (auth.existingSecret), so we don't pass --password here. check=True
+    # surfaces kubectl/clickhouse failures instead of silently swallowing
+    # them and continuing with a missing bronze DB.
     db_name = descriptor.get("connection", {}).get("namespace", f"bronze_{connector_name}")
     print(f"    Creating database: {db_name}")
     subprocess.run(
-        ["kubectl", "exec", "-n", "data", "deploy/clickhouse", "--",
-         "clickhouse-client", "--password", ch_password,
+        ["kubectl", "exec", "-n", INSIGHT_NAMESPACE, "statefulset/insight-clickhouse", "--",
+         "clickhouse-client",
          "--query", f"CREATE DATABASE IF NOT EXISTS {db_name}"],
-        capture_output=True, timeout=30
+        capture_output=True, text=True, timeout=30, check=True,
     )
 
     # --- Source definition ID (from state) ---
@@ -499,9 +504,17 @@ for connector_name, source_id_label, config in connector_instances:
 state_set(state, "workspace_id", workspace_id)
 save_state(state)
 
-# Mirror to ConfigMap when running in-cluster
+# Mirror to ConfigMap when running in-cluster. Use INSIGHT_NAMESPACE
+# (single-namespace model from PR #224, replacing the legacy `data` ns)
+# and surface failures via check=True instead of silencing kubectl stderr.
 if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
-    os.system(f'kubectl create configmap airbyte-state --from-file=state.yaml={state_path} -n data --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null')
+    subprocess.run(
+        f"kubectl create configmap airbyte-state "
+        f"--from-file=state.yaml={shlex.quote(state_path)} "
+        f"-n {shlex.quote(INSIGHT_NAMESPACE)} --dry-run=client -o yaml "
+        f"| kubectl apply -f -",
+        shell=True, check=True,
+    )
 
 print(f"  State saved: {state_path}")
 PYTHON

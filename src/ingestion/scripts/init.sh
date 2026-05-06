@@ -42,8 +42,16 @@ fi
 # means a non-default `clickhouse.database` no longer breaks first-run
 # init by silently creating the wrong DB. `staging` and `silver` are
 # project-internal dbt schemas, those names are stable.
-CH_DB="${CLICKHOUSE_DATABASE:-$(kubectl get configmap -n "$INSIGHT_NS" insight-platform -o jsonpath='{.data.CLICKHOUSE_DATABASE}' 2>/dev/null)}"
-CH_DB="${CH_DB:-insight}"
+#
+# Fail-fast: no silent default. If neither env var nor ConfigMap key is
+# set, abort with a clear message instead of guessing `insight` and
+# creating a database the rest of the platform won't use.
+CH_DB="${CLICKHOUSE_DATABASE:-}"
+if [[ -z "$CH_DB" ]]; then
+  CH_DB=$(kubectl get configmap -n "$INSIGHT_NS" insight-platform \
+    -o jsonpath='{.data.CLICKHOUSE_DATABASE}')
+fi
+: "${CH_DB:?CLICKHOUSE_DATABASE not resolvable: set the env var explicitly, or ensure the umbrella chart is installed and the insight-platform ConfigMap has CLICKHOUSE_DATABASE populated (mirrors clickhouse.database in chart values).}"
 
 echo "=== Creating dbt databases ==="
 for db in staging silver "$CH_DB"; do
