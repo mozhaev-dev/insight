@@ -6,22 +6,30 @@ on:
     paths:
       - "src/backend/**"
       - "src/ingestion/**"
+      - "charts/insight/**"
       - ".github/workflows/build-images.yml"
   pull_request:
     branches: [main]
     paths:
       - "src/backend/**"
       - "src/ingestion/**"
+      - "charts/insight/**"
       - ".github/workflows/build-images.yml"
   workflow_dispatch:
+
+# One in-flight chart-publish per branch. Prevents two merges from racing
+# the auto-commit-back step.
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/cyberfabric
 
 permissions:
-  contents: read
-  packages: write
+  contents: write   # publish-chart auto-commits Chart.yaml bumps back to main
+  packages: write   # publish-chart pushes the umbrella chart to GHCR
 
 jobs:
   changes:
@@ -30,6 +38,8 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       ingestion: ${{ steps.filter.outputs.ingestion }}
       jira_enrich: ${{ steps.filter.outputs.jira_enrich }}
+      umbrella: ${{ steps.filter.outputs.umbrella }}
+      build_tag: ${{ steps.tag.outputs.build_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -42,6 +52,20 @@ jobs:
               - 'src/ingestion/**'
             jira_enrich:
               - 'src/ingestion/connectors/task-tracking/jira/enrich/**'
+            umbrella:
+              - 'charts/insight/**'
+
+      # Compute the canonical build tag once for the whole workflow so every
+      # downstream job (image builds + chart publish) tags with the SAME
+      # string. metadata-action's {{date}} would otherwise drift by up to a
+      # minute across parallel matrix steps, and subchart appVersion bumps
+      # would point at images that don't exist.
+      - name: Compute build tag
+        id: tag
+        run: |
+          BUILD_TAG="$(date -u +%Y.%m.%d.%H.%M)-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          echo "build_tag=${BUILD_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Build tag for this run: ${BUILD_TAG}"
 
   backend:
     needs: changes
@@ -77,7 +101,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
           tags: |
-            type=raw,value={{date 'YYYY.MM.DD.HH.mm'}}-{{sha}},enable={{is_default_branch}}
+            type=raw,value=${{ needs.changes.outputs.build_tag }},enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
       # PRs (including forks) build only — verifies the Dockerfile and the
@@ -114,7 +138,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/insight-toolbox
           tags: |
-            type=raw,value={{date 'YYYY.MM.DD.HH.mm'}}-{{sha}},enable={{is_default_branch}}
+            type=raw,value=${{ needs.changes.outputs.build_tag }},enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/build-push-action@v6
@@ -148,7 +172,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/insight-jira-enrich
           tags: |
-            type=raw,value={{date 'YYYY.MM.DD.HH.mm'}}-{{sha}},enable={{is_default_branch}}
+            type=raw,value=${{ needs.changes.outputs.build_tag }},enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/build-push-action@v6
@@ -160,3 +184,143 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ─── Umbrella chart publish ────────────────────────────────────────────────
+  # Per merge to main: bump subchart appVersions for whichever services were
+  # rebuilt in this run, patch-bump the umbrella version, regenerate
+  # Chart.lock, package, push to oci://ghcr.io/cyberfabric/charts/insight,
+  # and commit the bumps back to main with [skip ci] so we don't recurse.
+  #
+  # Runs only on push-to-main (not on PRs) and only when at least one bucket
+  # actually rebuilt or the umbrella's own files changed. PR runs validate
+  # the workflow itself by passing through changes/build jobs, then stop.
+  #
+  # See ADR-0001 (docs/components/deployment/specs/ADR/0001-chart-publishing-on-merge.md)
+  # and the gitops SPEC §2.4 for the contract.
+  publish-chart:
+    needs: [changes, backend, toolbox, jira-enrich]
+    if: |
+      always()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && (needs.backend.result == 'success' || needs.backend.result == 'skipped')
+      && (needs.toolbox.result == 'success' || needs.toolbox.result == 'skipped')
+      && (needs.jira-enrich.result == 'success' || needs.jira-enrich.result == 'skipped')
+      && (
+        needs.changes.outputs.backend == 'true'
+        || needs.changes.outputs.ingestion == 'true'
+        || needs.changes.outputs.jira_enrich == 'true'
+        || needs.changes.outputs.umbrella == 'true'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history needed because we'll commit back to the same branch.
+          fetch-depth: 0
+          # Default GITHUB_TOKEN is fine for ungated branches; if main is
+          # protected, swap this for a PAT in repo secrets that can bypass.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.14.0'
+
+      - name: Bump subchart appVersions
+        env:
+          BUILD_TAG: ${{ needs.changes.outputs.build_tag }}
+          BACKEND: ${{ needs.changes.outputs.backend }}
+        run: |
+          set -euo pipefail
+          if [ "$BACKEND" = "true" ]; then
+            for sub in src/backend/services/api-gateway/helm \
+                      src/backend/services/analytics-api/helm \
+                      src/backend/services/identity/helm; do
+              echo "Bumping $sub/Chart.yaml appVersion → $BUILD_TAG"
+              yq -i ".appVersion = \"$BUILD_TAG\"" "$sub/Chart.yaml"
+            done
+          else
+            echo "No backend rebuilt; skipping subchart appVersion bumps."
+          fi
+
+      - name: Bump ingestion image refs
+        env:
+          BUILD_TAG: ${{ needs.changes.outputs.build_tag }}
+          INGESTION: ${{ needs.changes.outputs.ingestion }}
+          JIRA_ENRICH: ${{ needs.changes.outputs.jira_enrich }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+        run: |
+          set -euo pipefail
+          # Ingestion images are pinned in the umbrella values.yaml as full
+          # image refs, not as subchart appVersions, because they have no
+          # subchart of their own (they run as Argo Workflow steps).
+          if [ "$INGESTION" = "true" ]; then
+            REF="$IMAGE_PREFIX/insight-toolbox:$BUILD_TAG"
+            echo "Setting ingestion.toolboxImage → $REF"
+            yq -i ".ingestion.toolboxImage = \"$REF\"" charts/insight/values.yaml
+          fi
+          if [ "$JIRA_ENRICH" = "true" ]; then
+            REF="$IMAGE_PREFIX/insight-jira-enrich:$BUILD_TAG"
+            echo "Setting ingestion.jiraEnrichImage → $REF"
+            yq -i ".ingestion.jiraEnrichImage = \"$REF\"" charts/insight/values.yaml
+          fi
+
+      - name: Bump umbrella version
+        id: umbrella
+        env:
+          BUILD_TAG: ${{ needs.changes.outputs.build_tag }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(yq '.version' charts/insight/Chart.yaml)"
+          NEXT="$(echo "$CURRENT" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3+1 }')"
+          echo "Umbrella version $CURRENT → $NEXT"
+          yq -i ".version = \"$NEXT\"" charts/insight/Chart.yaml
+          yq -i ".appVersion = \"$BUILD_TAG\"" charts/insight/Chart.yaml
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+
+      - name: Helm dependency update
+        run: helm dependency update charts/insight
+
+      - name: Helm package
+        run: |
+          mkdir -p dist
+          helm package charts/insight -d dist/
+
+      - name: Helm registry login (GHCR)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Helm push
+        run: |
+          helm push "dist/insight-${{ steps.umbrella.outputs.version }}.tgz" \
+            oci://ghcr.io/cyberfabric/charts
+
+      - name: Commit version bumps back to main
+        env:
+          UMBRELLA_VERSION: ${{ steps.umbrella.outputs.version }}
+          BUILD_TAG: ${{ needs.changes.outputs.build_tag }}
+        run: |
+          set -euo pipefail
+          git config user.email "ci@cyberfabric.local"
+          git config user.name  "insight-ci"
+
+          git add charts/insight/Chart.yaml \
+                  charts/insight/Chart.lock \
+                  charts/insight/values.yaml \
+                  src/backend/services/api-gateway/helm/Chart.yaml \
+                  src/backend/services/analytics-api/helm/Chart.yaml \
+                  src/backend/services/identity/helm/Chart.yaml
+
+          if git diff --staged --quiet; then
+            echo "no version changes to commit"
+            exit 0
+          fi
+
+          # [skip ci] in the message prevents the push from re-triggering
+          # this workflow. paths-filter on the next real merge will diff
+          # against THIS commit, so service-file changes are correctly
+          # detected on the subsequent run.
+          git commit -m "chore(release): umbrella ${UMBRELLA_VERSION} (build ${BUILD_TAG}) [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
