@@ -4,19 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# KUBECONFIG can be empty when running in-cluster
-
 export TOOLKIT_DIR="${SCRIPT_DIR}/../airbyte-toolkit"
 
-# Host prerequisites (no-op in-cluster). Installs yq/jq/PyYAML into
-# ~/.insight/bin and opens a kubectl port-forward to airbyte-server with
-# an EXIT trap. Lets `bash init.sh` work end-to-end from a fresh laptop
-# with only kubectl + a working KUBECONFIG. Toolkit subscripts also
-# call these helpers so `register.sh` / `connect.sh` / `sync-flows.sh`
-# work standalone too.
+# ── Host preflight (FIRST executable step) ─────────────────────────────────
+# `ensure_tooling` runs before any cluster contact so a fresh-laptop
+# operator hits an actionable install hint immediately, not in the middle
+# of migrations. On macOS / WSL / Windows-native it auto-installs missing
+# tools; on native Linux it fails with platform-specific install commands
+# and the operator re-runs after `apt`/`dnf`/`pacman` etc. Toolkit sub-
+# scripts (register.sh, connect.sh, sync-flows.sh) call the same helper
+# so they work standalone too — second call is a no-op when init.sh has
+# already provisioned PATH and the port-forward.
 # shellcheck source=../airbyte-toolkit/lib/host-side-prerequisites.sh
 source "${TOOLKIT_DIR}/lib/host-side-prerequisites.sh"
 ensure_tooling
+
+# KUBECONFIG can be empty when running in-cluster.
 
 # Single-namespace umbrella (PR #224). All Insight components — including the
 # bundled ClickHouse StatefulSet — live in the release namespace, default

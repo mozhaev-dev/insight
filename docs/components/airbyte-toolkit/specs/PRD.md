@@ -112,10 +112,16 @@ These two state files use different key formats, different tenant naming convent
 ### 3.1 Module-Specific Environment Constraints
 
 - Requires `kubectl` with access to the cluster (for reading K8s Secrets).
-- Requires `python3` (3.10+) with `pyyaml`, plus `yq` and `jq` for descriptor parsing.
-  Host invocations auto-install missing CLI tools into `~/.insight/bin` via
-  `lib/host-side-prerequisites.sh::ensure_tooling`; toolbox image ships
-  them pre-installed.
+- Requires `python3` (3.10+) with `pyyaml`, plus `yq` (Mike Farah's Go
+  binary, NOT the Python wrapper) and `jq` for descriptor parsing. Host
+  invocations preflight via `lib/host-side-prerequisites.sh::ensure_tooling`
+  with platform-aware install policy:
+    - **macOS** — auto-install via `brew` when available, else download.
+    - **WSL** / **Windows native** (Git Bash, MSYS) — download static
+      binaries into `~/.insight/bin/`.
+    - **Linux native** — fail with a platform-specific install hint
+      (apt/dnf/pacman/snap); operator installs and re-runs.
+  The toolbox image ships all three pre-installed.
 - Requires `node` (for JWT minting via `crypto` module) or equivalent.
 - Airbyte API must be reachable. From host,
   `lib/host-side-prerequisites.sh::ensure_airbyte_pf` opens a port-forward
