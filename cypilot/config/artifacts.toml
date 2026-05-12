@@ -5,7 +5,7 @@ name = "InsightSpec"
 slug = "insightspec"
 kit = "sdlc"
 codebase = ["docs"]
-children = ["ir", "person", "orgchart", "metric-cat", "dataflow"]
+children = ["identity-svc", "ir", "person", "orgchart", "metric-cat", "dataflow"]
 
 [[systems.artifacts]]
 kind = "DESIGN"
@@ -545,16 +545,26 @@ path = "src/backend/services/analytics-api/specs/DESIGN.md"
 name = "Analytics API Design"
 traceability = "DOCS-ONLY"
 
+[[systems]]
+name = "Identity Service"
+slug = "identity-svc"
+kit = "sdlc"
+codebase = [
+    "docs/components/backend/identity-resolution/identity",
+    "src/backend/services/identity",
+]
+children = []
+
 [[systems.artifacts]]
 kind = "PRD"
 path = "docs/components/backend/identity-resolution/identity/specs/PRD.md"
-name = "Identity Resolution PRD"
+name = "Identity Service PRD"
 traceability = "DOCS-ONLY"
 
 [[systems.artifacts]]
 kind = "DESIGN"
 path = "docs/components/backend/identity-resolution/identity/specs/DESIGN.md"
-name = "Identity Resolution Design"
+name = "Identity Service Design"
 traceability = "DOCS-ONLY"
 
 [[systems.artifacts]]
