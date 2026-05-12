@@ -49,10 +49,10 @@
 --
 -- Known limitation that this fix does NOT eliminate: if a Zoom participant
 -- turned the camera on for one minute and then off for the remaining 59,
--- their `video_connection_type` is still non-NULL and their full session
--- length is attributed to `video_duration_seconds`. Zoom rows therefore
--- still OVER-ESTIMATE video / screen-share duration vs the true minute-of-X
--- numbers M365 produces. Cross-vendor aggregates that sum
+-- their `camera` device name is still populated for the session and their
+-- full session length is attributed to `video_duration_seconds`. Zoom rows
+-- therefore still OVER-ESTIMATE video / screen-share duration vs the true
+-- minute-of-X numbers M365 produces. Cross-vendor aggregates that sum
 -- `video_duration_seconds` across Zoom and M365 are NOT directly comparable.
 --
 -- True minute-of-video parity would require the Zoom Dashboard QoS endpoint
