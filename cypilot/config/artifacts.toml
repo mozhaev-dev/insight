@@ -5,7 +5,7 @@ name = "InsightSpec"
 slug = "insightspec"
 kit = "sdlc"
 codebase = ["docs"]
-children = ["ir", "person", "orgchart", "metric-cat", "dataflow"]
+children = ["identity-svc", "ir", "person", "orgchart", "metric-cat", "dataflow"]
 
 [[systems.artifacts]]
 kind = "DESIGN"
@@ -549,6 +549,63 @@ kind = "DESIGN"
 path = "src/backend/services/analytics-api/specs/DESIGN.md"
 name = "Analytics API Design"
 traceability = "DOCS-ONLY"
+
+[[systems]]
+name = "Identity Service"
+slug = "identity-svc"
+kit = "sdlc"
+codebase = [
+    "docs/components/backend/identity-resolution/identity",
+    "src/backend/services/identity",
+]
+children = []
+
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/components/backend/identity-resolution/identity/specs/PRD.md"
+name = "Identity Service PRD"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/components/backend/identity-resolution/identity/specs/DESIGN.md"
+name = "Identity Service Design"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0002-read-from-mariadb-persons.md"
+name = "ADR-0002: Read From the MariaDB persons Table"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0003-latest-per-source-semantics.md"
+name = "ADR-0003: Latest-Per-Source Lookup Semantics"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0004-lowercase-email-lookup.md"
+name = "ADR-0004: Lowercase Emails on Storage and Lookup"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0005-tenant-context-strategy.md"
+name = "ADR-0005: Composite Tenant Context With JWT Stub"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0006-display-name-split-fallback.md"
+name = "ADR-0006: Display-Name Split Fallback for First/Last Name"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0007-value-type-routing.md"
+name = "ADR-0007: value_type Routing for Identity Reads"
+
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0008-bamboohr-identity-inputs-extension.md"
+name = "ADR-0008: Extend BambooHR identity_inputs With Person Attributes"
 
 [[systems]]
 name = "Orchestrator"

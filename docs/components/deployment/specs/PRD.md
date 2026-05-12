@@ -216,13 +216,13 @@ The umbrella chart **MUST** treat API Gateway, Analytics API and Frontend as man
 
 **Actors**: `cpt-insightspec-actor-customer-sre`, `cpt-insightspec-actor-platform-operator`
 
-#### Optional Identity Resolution subchart
+#### Optional Identity subchart
 
-- [ ] `p2` - **ID**: `cpt-insightspec-fr-dep-optional-identity-resolution`
+- [ ] `p2` - **ID**: `cpt-insightspec-fr-dep-optional-identity`
 
-The umbrella chart **MUST** treat the `insight-identity-resolution` subchart as optional with `condition: identityResolution.deploy` defaulting to `false`, because that service requires populated bronze data and crash-loops on an empty database.
+The umbrella chart **MUST** treat the `insight-identity` subchart as optional with `condition: identity.deploy` defaulting to `false`, because that service requires a populated `persons` table and returns 404 for every lookup on an empty database.
 
-**Rationale**: A first install has no bronze data; shipping identity-resolution enabled by default would make every first install look broken.
+**Rationale**: A first install has no seeded `persons` rows; shipping identity enabled by default would make every first-install lookup return 404 with no clear indication of the missing seed.
 
 **Actors**: `cpt-insightspec-actor-customer-sre`
 
@@ -479,7 +479,7 @@ An install that is missing any of the following **MUST** abort during `helm temp
 
 **Stability**: unstable (pre-1.0 while the chart is at `version: 0.1.0`).
 
-**Description**: The values contract that customers and GitOps overlays target. It covers the `credentials` block (`autoGenerate`), the `global` block, the four infra blocks (ClickHouse, MariaDB, Redis, Redpanda) each with the unified flat shape (`deploy`, `host`, `port`, `database`, `username`, `passwordSecret`), the three mandatory app-service blocks (apiGateway, analyticsApi, frontend) plus the optional `identityResolution` (`deploy`-gated), and the `airbyte` + `ingestion.templates` blocks.
+**Description**: The values contract that customers and GitOps overlays target. It covers the `credentials` block (`autoGenerate`), the `global` block, the four infra blocks (ClickHouse, MariaDB, Redis, Redpanda) each with the unified flat shape (`deploy`, `host`, `port`, `database`, `username`, `passwordSecret`), the three mandatory app-service blocks (apiGateway, analyticsApi, frontend) plus the optional `identity` (`deploy`-gated), and the `airbyte` + `ingestion.templates` blocks.
 
 **Breaking Change Policy**: minor version bump for additive fields; major version bump for removed or renamed values keys; the validator output must name any newly required field.
 
@@ -662,8 +662,8 @@ An install that is missing any of the following **MUST** abort during `helm temp
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | No release automation yet — chart and images are hand-tagged. | A manual mis-tag ships an inconsistent umbrella. | Track as Open Item; write a CI pipeline that couples `git tag vX.Y.Z` → image build + chart package + OCI push; document the manual release process in the meantime. |
-| Inline infra passwords previously had to be duplicated into app-service DSNs. | Drift between infra password and DSN produced a silently-broken install. | Resolved: `credentials.autoGenerate=true` writes `insight-db-creds` once and the umbrella derives all app-service Secrets (`insight-analytics-api-config`, `insight-identity-resolution-config`) from the same passwords. BYO mode reads the customer-supplied `insight-db-creds` instead. |
+| Inline infra passwords previously had to be duplicated into app-service DSNs. | Drift between infra password and DSN produced a silently-broken install. | Resolved: `credentials.autoGenerate=true` writes `insight-db-creds` once and the umbrella derives all app-service Secrets (`insight-analytics-api-config`, `insight-identity-config`) from the same passwords. BYO mode reads the customer-supplied `insight-db-creds` instead. |
 | Frontend image is `linux/amd64` only — Apple Silicon hosts rely on QEMU emulation or local rebuild. | Slow first pull and occasional emulation bugs on dev machines. | Dev wrapper builds the frontend from source as a workaround; infra team to publish multi-arch images. |
-| Identity Resolution subchart ships as MVP stub that crashloops on empty bronze. | If operator flips `identityResolution.deploy: true` before any BambooHR sync, the release looks broken. | Keep default `identityResolution.deploy: false`; document the prerequisite in README; surface a clearer error message in the service itself (Backend concern). |
+| Identity subchart returns 404 for every lookup until the seed pipeline populates `persons`. | If operator flips `identity.deploy: true` before any connector sync + seed, every lookup looks broken. | Keep default `identity.deploy: false`; document the prerequisite in README; surface a "no observations for tenant" log line in the service itself (Backend concern). |
 | Airbyte chart 1.9.x is deliberately skipped because its bundled app 2.0.x-alpha is not production-grade. | Customer asking for 1.9 gets a "no". | Document the policy in the Airbyte README; revisit when 2.0 GA ships. |
 | Bitnami's late-2025 registry change means the MariaDB / Redis subcharts rely on `bitnamilegacy` + `global.security.allowInsecureImages`. | If Bitnami deprecates `bitnamilegacy`, both subcharts break. | Monitor Bitnami's policy; plan a migration to a vendored or self-hosted registry; enterprise customers are expected to use their own internal registry. |

@@ -95,6 +95,12 @@ OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-}"
 OIDC_REDIRECT_URI="${OIDC_REDIRECT_URI:-}"
 OIDC_AUDIENCE="${OIDC_AUDIENCE:-}"
 
+# Identity-service default tenant for header-less callers. Each developer's
+# MariaDB has rows under a specific `insight_tenant_id` — pin it here so
+# `GET /v1/persons/{email}` works without sending `X-Insight-Tenant-Id`.
+# Empty = identity requires the header on every request (prod mode).
+IDENTITY_TENANT_DEFAULT_ID="${IDENTITY_TENANT_DEFAULT_ID:-}"
+
 # ─── Sanity ───────────────────────────────────────────────────────────────
 if [[ "$AUTH_DISABLED" != "true" && -z "$OIDC_EXISTING_SECRET" ]]; then
   : "${OIDC_ISSUER:?ERROR: OIDC_ISSUER is required — set it in $ENV_FILE or use OIDC_EXISTING_SECRET}"
@@ -249,6 +255,16 @@ build_and_load_image() {
   fi
 }
 
+# Frontend image coordinates — defined OUTSIDE the `if != ingestion`
+# block because the DEV_VALUES heredoc below references `${FE_REPO}` /
+# `${FE_TAG}` unconditionally. Under `set -u`, an ingestion-only run
+# would otherwise crash with `FE_REPO: unbound variable` after the
+# toolbox/jira-enrich builds succeed but before the values file is
+# generated.
+FE_REPO="${FE_IMAGE_REPOSITORY:-ghcr.io/cyberfabric/insight-front}"
+FE_TAG="${FE_IMAGE_TAG:-$(image_tag_for frontend)}"
+FE_IMAGE="${FE_REPO}:${FE_TAG}"
+
 # App services are MANDATORY components of the umbrella (no enabled-flag),
 # so whenever we install the umbrella — including `frontend` or `backend`
 # component runs that trigger helm upgrade — every image must be present
@@ -256,7 +272,9 @@ build_and_load_image() {
 if [[ "$COMPONENT" != "ingestion" ]]; then
   echo "=== Building backend images ==="
   build_and_load_image analytics-api src/backend/services/analytics-api/Dockerfile
-  build_and_load_image identity      src/backend/services/identity/Dockerfile
+  # The .NET 9 identity service uses its OWN build context (the service
+  # folder), unlike the Rust services which share `src/backend/` as context.
+  build_and_load_image identity      src/backend/services/identity/Dockerfile src/backend/services/identity/
   build_and_load_image api-gateway   src/backend/services/api-gateway/Dockerfile
 
   # Frontend — prefer a local build from the neighbouring insight-front
@@ -266,9 +284,6 @@ if [[ "$COMPONENT" != "ingestion" ]]; then
   # what the dev just edited.
   # No `:latest` default — tag is the dev image_tag_for() output, which
   # is a deterministic dev tag (`dev`, derived from commit / mtime).
-  FE_REPO="${FE_IMAGE_REPOSITORY:-ghcr.io/cyberfabric/insight-front}"
-  FE_TAG="${FE_IMAGE_TAG:-$(image_tag_for frontend)}"
-  FE_IMAGE="${FE_REPO}:${FE_TAG}"
   # Locate the insight-front checkout. The committed `insight-front_symlink`
   # only resolves in the primary worktree; under .claude/worktrees/<branch>
   # we fall back to git's worktree list to find the main repo's sibling.
@@ -342,6 +357,8 @@ DEV_VALUES=$(mktemp)
 trap 'rm -f "$DEV_VALUES"' EXIT
 
 ANALYTICS_IMG=$(image_ref analytics-api)
+# `identity` image is the .NET service (legacy Rust stub retired —
+# build_and_load_image identity above points at the C# Dockerfile).
 IDENTITY_IMG=$(image_ref identity)
 GATEWAY_IMG=$(image_ref api-gateway)
 
@@ -376,11 +393,12 @@ analyticsApi:
     repository: "${AN_REPO}"
     tag: "${AN_TAG_VAL}"
     pullPolicy: "${IMAGE_PULL_POLICY}"
-identityResolution:
+identity:
   image:
     repository: "${ID_REPO}"
     tag: "${ID_TAG_VAL}"
     pullPolicy: "${IMAGE_PULL_POLICY}"
+  tenantDefaultId: "${IDENTITY_TENANT_DEFAULT_ID}"
 frontend:
   image:
     # Frontend image is built from local source by build_and_load_frontend()

@@ -40,8 +40,7 @@ apiGateway:
 analyticsApi:
   replicaCount: 1
 
-# Identity Resolution stub is OFF by default in the umbrella (crashloops
-# without populated bronze_bamboohr.employees data). Enable it for dev
-# so the route added under apiGateway.proxy.routes has a live upstream.
-identityResolution:
+# Identity (.NET 9) — persons-store API. Enabled in dev so the route
+# added under apiGateway.proxy.routes has a live upstream.
+identity:
   deploy: true

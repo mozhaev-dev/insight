@@ -801,19 +801,22 @@ There is **no global MariaDB migration mechanism** in this project.
 Each backend service that owns MariaDB tables carries its own
 migrations inside the service codebase and applies them at startup.
 
-- **analytics-api**: SeaORM `Migrator` at
+- **analytics-api** (Rust): SeaORM `Migrator` at
   `src/backend/services/analytics-api/src/migration/`; tracker table
   `seaql_migrations` in the database referenced by
   `mariadb.database` (umbrella chart, default `insight`).
-- **identity-resolution**: SeaORM `Migrator` at
-  `src/backend/services/identity/src/migration/`; tracker table
-  `seaql_migrations` in the database referenced by
-  `identityResolution.databaseName` (umbrella chart, default `identity`).
+- **identity** (.NET 9): DbUp at
+  `src/backend/services/identity/src/Insight.Identity.Infrastructure/Migrations/`
+  (plain SQL files, applied via `MigrationRunner`); tracker table
+  `SchemaVersions` (DbUp default) in the database referenced by
+  `identity.databaseName` (umbrella chart, default `identity`).
 - **Future backend services**: follow the same pattern — own
-  `src/.../migration/`, own tracker table in own database.
+  `Migrations/` folder co-located with the service code, own tracker
+  table in own database. Tooling flavour follows the service's
+  language (SeaORM for Rust, DbUp for .NET).
 
-All services use the same SeaORM-Rust flavour with `Migrator::up(db,
-None)` invoked at startup. This provides:
+All services invoke their migrator at startup before opening the HTTP
+listener. This provides:
 
 - **Co-location**: schema changes ship with the Rust code that depends
   on them; a service's DDL and its entity definitions never drift.

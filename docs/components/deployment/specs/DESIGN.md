@@ -43,9 +43,9 @@ The subsystem is designed around a single-namespace deployment model: Airbyte, A
 
 | Requirement | Design Response |
 |-------------|-----------------|
-| `cpt-insightspec-fr-dep-umbrella-chart` | Umbrella chart `charts/insight/` with eight declared dependencies in `Chart.yaml` (four infra subcharts with `condition: <alias>.deploy` + four app-service subcharts, of which identity-resolution is the only one gated). Chart renders through a single `helm install`. |
-| `cpt-insightspec-fr-dep-mandatory-apps` | API Gateway, Analytics API and Frontend are declared without a `condition:` in `Chart.yaml`; only Identity Resolution carries `condition: identityResolution.deploy`. |
-| `cpt-insightspec-fr-dep-optional-identity-resolution` | `identityResolution.deploy: false` is the default in `values.yaml`; subchart renders only when explicitly enabled. |
+| `cpt-insightspec-fr-dep-umbrella-chart` | Umbrella chart `charts/insight/` with eight declared dependencies in `Chart.yaml` (four infra subcharts with `condition: <alias>.deploy` + four app-service subcharts, of which `identity` is the only one gated). Chart renders through a single `helm install`. |
+| `cpt-insightspec-fr-dep-mandatory-apps` | API Gateway, Analytics API and Frontend are declared without a `condition:` in `Chart.yaml`; only Identity carries `condition: identity.deploy`. |
+| `cpt-insightspec-fr-dep-optional-identity` | `identity.deploy: false` is the default in `values.yaml`; subchart renders only when explicitly enabled. |
 | `cpt-insightspec-fr-dep-ingestion-templates` | `templates/ingestion/*.yaml` are first-class Helm templates that consume the umbrella's named helpers (`insight.clickhouse.fqdn`, `insight.airbyte.url`, …) directly. Argo expression syntax is escaped with backticks to survive Helm templating. Gated by `ingestion.templates.enabled`. |
 | `cpt-insightspec-fr-dep-platform-configmap` | `templates/platform-config.yaml` emits a single ConfigMap named `{release}-platform`; every pod in the namespace can consume it via `envFrom`. |
 | `cpt-insightspec-fr-dep-external-mode` | Each infra block in `values.yaml` has the SAME unified shape (`<dep>.deploy`, `<dep>.host`, `<dep>.port`, `<dep>.passwordSecret`); `<dep>.deploy: false` skips the bundled subchart but consumers still read the same fields. The `Chart.yaml` dependency carries `condition: <alias>.deploy`. |
@@ -105,7 +105,7 @@ Dev Wrapper ─────────▶ ─┤ dev-up.sh   install.sh   ArgoC
                          │                                          │
                          │ App subcharts (mandatory: apiGateway,    │
                          │ analyticsApi, frontend; optional:        │
-                         │ identityResolution)                      │
+                         │ identity)                                │
                          └──────────────────────────────────────────┘
 ```
 
@@ -265,7 +265,7 @@ graph TB
         APIGW[apiGateway]
         AA[analyticsApi]
         FE[frontend]
-        IR[identityResolution]
+        ID[identity]
     end
 
     DevUp --> Install
@@ -288,7 +288,7 @@ graph TB
     Umbrella --> APIGW
     Umbrella --> AA
     Umbrella --> FE
-    Umbrella --> IR
+    Umbrella --> ID
 ```
 
 #### Umbrella Chart
@@ -495,7 +495,7 @@ Developers iterate faster when the platform bring-up is one command. The wrapper
 | redpanda | `redpanda.deploy`, `redpanda.brokers`, `redpanda.tls.*`, `redpanda.auth.sasl.*` | Unified shape — bundled or external. | unstable |
 | apiGateway | `apiGateway.replicaCount`, `apiGateway.image.*`, `apiGateway.oidc.*`, `apiGateway.authDisabled`, `apiGateway.ingress.*`, `apiGateway.proxy.routes` | Mandatory API Gateway service. | unstable |
 | analyticsApi | `analyticsApi.replicaCount`, `analyticsApi.image.*` | Mandatory Analytics API service; reads DB/Redis/CH coordinates from auto-generated `insight-analytics-api-config` Secret. | unstable |
-| identityResolution | `identityResolution.deploy`, `identityResolution.replicaCount`, `identityResolution.image.*` | Optional Identity Resolution stub (off by default). | unstable |
+| identity | `identity.deploy`, `identity.replicaCount`, `identity.image.*`, `identity.databaseName`, `identity.tenantDefaultId` | Optional .NET 9 Identity service (off by default). | unstable |
 | frontend | `frontend.replicaCount`, `frontend.image.*`, `frontend.ingress.*`, `frontend.oidc.*` | Mandatory Frontend SPA. | unstable |
 
 #### Installer environment contract
@@ -523,11 +523,11 @@ Developers iterate faster when the platform bring-up is one command. The wrapper
 |-------------------|----------------|---------|
 | `src/backend/services/api-gateway/helm` | Helm subchart | Mandatory app service shipped under `apiGateway` alias. |
 | `src/backend/services/analytics-api/helm` | Helm subchart | Mandatory app service shipped under `analyticsApi` alias. |
-| `src/backend/services/identity/helm` | Helm subchart | Optional identity-resolution stub under `identityResolution` alias. |
+| `src/backend/services/identity/helm` | Helm subchart | Optional .NET 9 identity service under `identity` alias. Persons-store API. |
 | `src/frontend/helm` | Helm subchart | Mandatory SPA shipped under `frontend` alias. |
 | `helmfile/charts/clickhouse` | Helm subchart (local wrapper) | ClickHouse OLAP store. |
 | `charts/insight/templates/ingestion/*.yaml` | First-class Helm templates | Ingestion WorkflowTemplate sources, gated by `ingestion.templates.enabled`; consume umbrella helpers directly via `include`. |
-| `helmfile.yaml.gotmpl` | Repo-root helmfile (legacy, EXPERIMENTAL) | Pre-#224 alternative install path. Structurally incompatible with the post-#224 umbrella + bitnami-subcharts + Secret-emission pattern (`helmfile sync` fails on the local clickhouse subchart's `required` checks; api-gateway gets dead `clickhouse:` config; analytics-api/identity-resolution depend on Secrets the umbrella emits). Header warning in the file documents the three issues; retained for reference only and may be removed entirely in a follow-up cleanup. **Not on any canonical install path.** |
+| `helmfile.yaml.gotmpl` | Repo-root helmfile (legacy, EXPERIMENTAL) | Pre-#224 alternative install path. Structurally incompatible with the post-#224 umbrella + bitnami-subcharts + Secret-emission pattern (`helmfile sync` fails on the local clickhouse subchart's `required` checks; api-gateway gets dead `clickhouse:` config; analytics-api/identity depend on Secrets the umbrella emits). Header warning in the file documents the three issues; retained for reference only and may be removed entirely in a follow-up cleanup. **Not on any canonical install path.** |
 | `src/ingestion/airbyte-toolkit/lib/env.sh` | Read `AIRBYTE_API_URL` from the platform ConfigMap | Ingestion scripts consume Airbyte coordinates from the ConfigMap rather than hard-coding. |
 
 **Dependency Rules**:
@@ -729,9 +729,9 @@ Not applicable. The Deployment subsystem stores no data; it manipulates Kubernet
 **Known gaps**:
 
 - **Release automation.** Versions are pinned in `Chart.yaml` and image tags but there is no CI pipeline that couples `git tag vX.Y.Z` to image build + chart package + OCI push. Releases today are manual. Planned.
-- **Credential propagation.** Resolved as of this PR: the umbrella generates `insight-db-creds` (raw passwords) plus `insight-analytics-api-config` and `insight-identity-resolution-config` (full DSNs assembled from helpers + the generated passwords). App services consume these via `envFrom: secretRef: ...`. Inline URLs in `values.yaml` are gone. Remaining follow-up: migrate the few subcharts that still read inline `auth.password` from values to read the umbrella-managed Secret via the same `<dep>.passwordSecret.name/key` reference (bitnami's `auth.existingSecret` knob).
+- **Credential propagation.** Resolved as of this PR: the umbrella generates `insight-db-creds` (raw passwords) plus `insight-analytics-api-config` and `insight-identity-config` (full DSNs assembled from helpers + the generated passwords). App services consume these via `envFrom: secretRef: ...`. Inline URLs in `values.yaml` are gone. Remaining follow-up: migrate the few subcharts that still read inline `auth.password` from values to read the umbrella-managed Secret via the same `<dep>.passwordSecret.name/key` reference (bitnami's `auth.existingSecret` knob).
 - **Airbyte webapp gating in production.** Canonical values do not disable the webapp; a production overlay is expected but not shipped. Needs an opinionated prod overlay as a follow-up.
-- **Identity Resolution MVP stub.** The `insight-identity-resolution` subchart exists but is a stub that crashloops on empty bronze. Default `identityResolution.deploy: false` mitigates accidental activation; a real error message at startup is a Backend-side improvement.
+- **Identity service first-install UX.** The `insight-identity` subchart returns 404 for every lookup until the seed pipeline populates `persons`. Default `identity.deploy: false` mitigates accidental activation; a real "no observations for tenant" log line at startup is a Backend-side improvement.
 - **`rbac-insight.yaml` vs `rbac.yaml`.** The dev/canonical path uses placeholder-substituted `rbac.yaml`; the GitOps path references a pre-rendered `rbac-insight.yaml`. Keeping these synchronised is manual. Planned follow-up is a single templated RBAC source that both paths consume.
 - **Frontend multi-arch.** As noted, published as linux/amd64 only. Infra team owns the CI change.
 

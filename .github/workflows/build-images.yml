@@ -78,8 +78,11 @@ jobs:
             dockerfile: services/api-gateway/Dockerfile
           - image: insight-analytics-api
             dockerfile: services/analytics-api/Dockerfile
-          - image: insight-identity-resolution
+          # .NET 9 identity service. Context is the service folder itself,
+          # not src/backend/, because it's self-contained (no Cargo workspace).
+          - image: insight-identity
             dockerfile: services/identity/Dockerfile
+            context: src/backend/services/identity
     steps:
       - uses: actions/checkout@v4
 
@@ -109,7 +112,11 @@ jobs:
       # merges to main and on manual dispatches from main.
       - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
-          context: src/backend
+          # Most backend Dockerfiles (Rust services) share src/backend as
+          # build context — they reference the Cargo workspace at the
+          # backend root. The .NET identity service is self-contained
+          # and overrides `matrix.context` to its own folder.
+          context: ${{ matrix.context || 'src/backend' }}
           file: src/backend/${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
