@@ -99,9 +99,7 @@ OIDC_AUDIENCE="${OIDC_AUDIENCE:-}"
 # MariaDB has rows under a specific `insight_tenant_id` — pin it here so
 # `GET /v1/persons/{email}` works without sending `X-Insight-Tenant-Id`.
 # Empty = identity requires the header on every request (prod mode).
-# Back-compat: the older `IDENTITY_CSHARP_TENANT_DEFAULT_ID` name is still
-# honoured so existing .env.local files keep working through the migration.
-IDENTITY_TENANT_DEFAULT_ID="${IDENTITY_TENANT_DEFAULT_ID:-${IDENTITY_CSHARP_TENANT_DEFAULT_ID:-}}"
+IDENTITY_TENANT_DEFAULT_ID="${IDENTITY_TENANT_DEFAULT_ID:-}"
 
 # ─── Sanity ───────────────────────────────────────────────────────────────
 if [[ "$AUTH_DISABLED" != "true" && -z "$OIDC_EXISTING_SECRET" ]]; then
@@ -264,10 +262,8 @@ build_and_load_image() {
 if [[ "$COMPONENT" != "ingestion" ]]; then
   echo "=== Building backend images ==="
   build_and_load_image analytics-api src/backend/services/analytics-api/Dockerfile
-  # `identity` is now the .NET 9 service. The Dockerfile uses its OWN
-  # build context (the service folder), unlike the Rust services which
-  # share `src/backend/` as context.  The retired Rust stub lives in
-  # `src/backend/services/identity-old/` and is no longer built here.
+  # The .NET 9 identity service uses its OWN build context (the service
+  # folder), unlike the Rust services which share `src/backend/` as context.
   build_and_load_image identity      src/backend/services/identity/Dockerfile src/backend/services/identity/
   build_and_load_image api-gateway   src/backend/services/api-gateway/Dockerfile
 

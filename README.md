@@ -453,7 +453,7 @@ For Paths 2/3 image tags go directly into the Helm overlay (`apiGateway.image.ta
 |---|---|---|
 | `insight-api-gateway` | `cyberfabric/insight` (this repo) | https://github.com/cyberfabric/insight/pkgs/container/insight-api-gateway |
 | `insight-analytics-api` | this repo | https://github.com/cyberfabric/insight/pkgs/container/insight-analytics-api |
-| `insight-identity-resolution` | this repo | https://github.com/cyberfabric/insight/pkgs/container/insight-identity-resolution |
+| `insight-identity` | this repo | https://github.com/cyberfabric/insight/pkgs/container/insight-identity |
 | `insight-toolbox` | this repo | https://github.com/cyberfabric/insight/pkgs/container/insight-toolbox |
 | `insight-front` | **separate** `cyberfabric/insight-front` | https://github.com/cyberfabric/insight/pkgs/container/insight-front |
 | `insight-jira-enrich` | **separate** `cyberfabric/insight-jira-enrich` | https://github.com/cyberfabric/insight/pkgs/container/insight-jira-enrich |

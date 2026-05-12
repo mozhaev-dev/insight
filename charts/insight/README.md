@@ -18,9 +18,8 @@ Single canonical unit of delivery for the Insight platform.
 | Analytics API         | app service (req'd)  | `src/backend/services/analytics-api/helm`    | mandatory (no flag)             |
 | Frontend (SPA)        | app service (req'd)  | `src/frontend/helm`                          | mandatory (no flag)             |
 | Identity (.NET 9)     | app service (opt)    | `src/backend/services/identity/helm`         | `identity.deploy`               |
-| Identity (Rust, LEGACY) | app service (opt)  | `src/backend/services/identity-old/helm`     | `identityResolution.deploy`     |
 
-> Identity Resolution requires a populated `persons` table (seeded by `src/backend/services/identity/seed/seed-persons.sh`). The .NET service under `identity.deploy=true` is canonical going forward; the legacy Rust subchart is retained until the cleanup PR removes it. Neither is an OIDC provider. Both off by default.
+> Identity requires a populated `persons` table (seeded by `src/backend/services/identity/seed/seed-persons.sh`). Not an OIDC provider. Off by default.
 
 ## What it does NOT contain
 
@@ -99,7 +98,7 @@ Key groups:
 - `global.*` — cluster-wide defaults (pull secrets, storage class, bitnami image policy)
 - `<dep>.deploy` / `<dep>.host` / `<dep>.port` / `<dep>.passwordSecret` — unified shape for ClickHouse, MariaDB, Redis, Redpanda
 - `apiGateway` / `analyticsApi` / `frontend` — **mandatory** app services (no deploy-flag; the gateway is the single entrance and the product is one unit)
-- `identityResolution.deploy` — **optional** identity-resolution service (off by default; not an OIDC provider)
+- `identity.deploy` — **optional** .NET identity service (off by default; not an OIDC provider)
 - `apiGateway.oidc` — OIDC configuration (prefer `existingSecret`; inline requires `issuer` + `clientId` + `redirectUri` together)
 - `apiGateway.proxy.routes` — reverse-proxy config to downstream services
 - `ingestion.templates.enabled` — whether to ship Argo WorkflowTemplates; requires Argo CRDs to be present in the cluster

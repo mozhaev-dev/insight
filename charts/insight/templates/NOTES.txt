@@ -23,9 +23,6 @@ Application services (always-on):
 {{- else }}
   · Identity           not deployed (requires a populated `persons` table; enable via identity.deploy=true)
 {{- end }}
-{{- if .Values.identityResolution.deploy }}
-  ⚠ Identity Res.      http://{{ include "insight.identityResolution.host" . }}:8082  (RETIRED Rust stub still deployed — migrate to `identity`)
-{{- end }}
 {{- if .Values.ingestion.templates.enabled }}
   ✓ Ingestion templates: airbyte-sync, dbt-run, ingestion-pipeline
 {{- end }}

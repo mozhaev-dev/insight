@@ -1,40 +1,113 @@
 # ADR-0004: Lowercase Emails on Storage and Lookup
 
+**ID**: `cpt-insightspec-adr-0004-lowercase-email-lookup`
+
+
+
+<!-- toc -->
+
+- [Context and Problem Statement](#context-and-problem-statement)
+- [Decision Drivers](#decision-drivers)
+- [Considered Options](#considered-options)
+- [Decision Outcome](#decision-outcome)
+  - [Consequences](#consequences)
+  - [Confirmation](#confirmation)
+- [Pros and Cons of the Options](#pros-and-cons-of-the-options)
+  - [Lowercase on write and on lookup (chosen)](#lowercase-on-write-and-on-lookup-chosen)
+  - [Switch collation to `utf8mb4_general_ci`](#switch-collation-to-utf8mb4generalci)
+  - [`LOWER(value_id) = LOWER(@email)`](#lowervalueid--loweremail)
+- [More Information](#more-information)
+- [Traceability](#traceability)
+
+<!-- /toc -->
+
 **Status:** Accepted
 
-## Context
+## Context and Problem Statement
 
 `persons.value_id` is `VARCHAR(320) COLLATE utf8mb4_bin`. The `_bin`
-collation makes byte equality the only equality, so `Alice@Example.COM`
-and `alice@example.com` would not match. Three options considered:
+collation makes byte equality the only equality, so
+`Alice@Example.COM` and `alice@example.com` would not match. The
+service needs a deterministic email-lookup behaviour that keeps the
+`idx_value_id` covered index fast.
 
-1. Switch the collation to `utf8mb4_general_ci` for case-insensitive
-   matching.
-2. Wrap the lookup in `LOWER(value_id) = LOWER(@email)` — defeats the
-   index.
-3. Lowercase on write and on lookup; preserve the original case in
-   `display_name` (or in a future column) when needed.
+## Decision Drivers
 
-## Decision
+- The hot-path index (`idx_value_id`) must stay covered — a SARG-able
+  equality predicate is required.
+- Operators expect emails to be case-insensitive in practice (even
+  though RFC 5321 leaves the local part case-sensitive).
+- The lookup behaviour must be deterministic across producers.
 
-Option 3. The seed already lowercases via `LOWER(TRIM())` when checking
-the existing-email set, and the service applies `ToLowerInvariant()` to
-the lookup parameter before binding.
+## Considered Options
 
-## Rationale
+- Switch the collation to `utf8mb4_general_ci` for case-insensitive
+  matching.
+- Wrap the lookup in `LOWER(value_id) = LOWER(@email)` —
+  case-insensitive at query time but defeats the index.
+- Lowercase on write and on lookup; preserve the original case in
+  `display_name` (or in a future column) when needed.
 
-- Keeps the hot-path index (`idx_value_id`) intact; case-insensitive
-  collations are slower for byte-level equality and disable some
-  optimizations.
-- Standard practice for email storage — RFC 5321 mandates the local
-  part is case-sensitive, but operationally everyone treats them as
-  case-insensitive, and we want lookups to be deterministic.
+## Decision Outcome
 
-## Consequences
+Lowercase on write and on lookup. The seed already lowercases via
+`LOWER(TRIM())` when checking the existing-email set, and the service
+applies `ToLowerInvariant()` to the lookup parameter before binding.
+
+### Consequences
 
 - Original casing is lost from `value_id` (it is preserved on
   `display_name` rows, which use `utf8mb4_unicode_ci`).
 - The seed must lowercase before insert; that contract is enforced by
   ADR documentation, not by a CHECK constraint, so a future writer
-  must follow the convention. A lint or test on the seed is a possible
-  follow-up.
+  must follow the convention.
+- A lint or test on the seed that asserts all email value_ids are
+  lowercased on disk is a possible follow-up.
+
+### Confirmation
+
+Confirmed by `PersonLookupServiceTests.LowercaseEmail` (unit) and
+`PersonsEndpointTests.MixedCaseEmail` (integration) — both seed mixed-
+case observations and verify the lookup with a different case still
+returns the assembled record.
+
+## Pros and Cons of the Options
+
+### Lowercase on write and on lookup (chosen)
+
+- Good, because the `idx_value_id` covered index stays hot — single
+  equality lookup on the same byte form.
+- Good, because the seed and the reader share one transformation rule
+  (`LOWER(TRIM(...))`).
+- Good, because behaviour is deterministic — no implicit collation
+  rules to reason about.
+- Bad, because original casing is lost on `value_id`. Recoverable from
+  `display_name` when needed.
+
+### Switch collation to `utf8mb4_general_ci`
+
+- Good, because no writer-side discipline required.
+- Bad, because case-insensitive collations have measurably slower
+  equality on long strings and disable some plan optimisations.
+- Bad, because `utf8mb4_general_ci` is not Unicode-correct for
+  non-ASCII case mapping; `_unicode_ci` is the modern choice but is
+  even slower.
+
+### `LOWER(value_id) = LOWER(@email)`
+
+- Good, because no writer-side discipline required.
+- Bad, because the predicate is non-SARG-able — every row in the
+  partition is scanned. With 50k persons this becomes the bottleneck
+  for NFR-latency.
+
+## More Information
+
+- RFC 5321 §2.4 — local-part case sensitivity caveat (in practice
+  case-insensitive).
+- MariaDB collation reference — `utf8mb4_bin` is byte equality.
+
+## Traceability
+
+- [`cpt-insightspec-fr-identity-routing-lowercase`](../PRD.md#lowercase-email-at-the-boundary)
+- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#resolve-email-to-person_id)
+- [`cpt-insightspec-nfr-identity-latency`](../PRD.md#p95-lookup-latency)

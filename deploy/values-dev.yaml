@@ -40,13 +40,7 @@ apiGateway:
 analyticsApi:
   replicaCount: 1
 
-# Identity Resolution (.NET 9) — canonical persons-store API. Enabled
-# in dev so the route added under apiGateway.proxy.routes has a live
-# upstream. The legacy Rust stub (identityResolution) is retired by
-# default — leave it off here.
+# Identity (.NET 9) — persons-store API. Enabled in dev so the route
+# added under apiGateway.proxy.routes has a live upstream.
 identity:
   deploy: true
-
-# Legacy Rust stub. OFF in dev — replaced by the `identity` subchart above.
-identityResolution:
-  deploy: false

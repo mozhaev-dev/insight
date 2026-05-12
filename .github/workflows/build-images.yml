@@ -78,13 +78,8 @@ jobs:
             dockerfile: services/api-gateway/Dockerfile
           - image: insight-analytics-api
             dockerfile: services/analytics-api/Dockerfile
-          # Retired Rust stub — kept buildable until the cleanup PR
-          # removes the source folder. Cluster-side it's gated behind
-          # `identityResolution.deploy=false` (default).
-          - image: insight-identity-resolution
-            dockerfile: services/identity-old/Dockerfile
-          # Canonical .NET 9 identity service (replaces the Rust stub).
-          # Context is the service folder itself, not src/backend/.
+          # .NET 9 identity service. Context is the service folder itself,
+          # not src/backend/, because it's self-contained (no Cargo workspace).
           - image: insight-identity
             dockerfile: services/identity/Dockerfile
             context: src/backend/services/identity
@@ -294,8 +289,7 @@ jobs:
           if [ "$BACKEND" = "true" ]; then
             for sub in src/backend/services/api-gateway/helm \
                       src/backend/services/analytics-api/helm \
-                      src/backend/services/identity/helm \
-                      src/backend/services/identity-old/helm; do
+                      src/backend/services/identity/helm; do
               echo "Bumping $sub/Chart.yaml appVersion → $BUILD_TAG"
               yq -i ".appVersion = \"$BUILD_TAG\"" "$sub/Chart.yaml"
             done
@@ -370,8 +364,7 @@ jobs:
                   charts/insight/values.yaml \
                   src/backend/services/api-gateway/helm/Chart.yaml \
                   src/backend/services/analytics-api/helm/Chart.yaml \
-                  src/backend/services/identity/helm/Chart.yaml \
-                  src/backend/services/identity-old/helm/Chart.yaml
+                  src/backend/services/identity/helm/Chart.yaml
 
           if git diff --staged --quiet; then
             echo "no version changes to commit"

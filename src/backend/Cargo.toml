@@ -4,10 +4,6 @@ members = [
     "plugins/oidc-authn-plugin",
     "services/api-gateway",
     "services/analytics-api",
-    # Retired Rust identity stub — kept buildable until cleanup PR removes
-    # the source folder entirely. The canonical identity service is now the
-    # .NET 9 binary in `services/identity/` (no Rust workspace member).
-    "services/identity-old",
 ]
 resolver = "3"
 

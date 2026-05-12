@@ -559,11 +559,6 @@ traceability = "DOCS-ONLY"
 
 [[systems.artifacts]]
 kind = "ADR"
-path = "docs/components/backend/identity-resolution/identity/specs/ADR/0001-dotnet-replaces-rust-stub.md"
-name = "ADR-0001: .NET 9 Service Replaces the Rust Identity-Resolution Stub"
-
-[[systems.artifacts]]
-kind = "ADR"
 path = "docs/components/backend/identity-resolution/identity/specs/ADR/0002-read-from-mariadb-persons.md"
 name = "ADR-0002: Read From the MariaDB persons Table"
 
@@ -596,11 +591,6 @@ name = "ADR-0007: value_type Routing for Identity Reads"
 kind = "ADR"
 path = "docs/components/backend/identity-resolution/identity/specs/ADR/0008-bamboohr-identity-inputs-extension.md"
 name = "ADR-0008: Extend BambooHR identity_inputs With Person Attributes"
-
-[[systems.artifacts]]
-kind = "ADR"
-path = "docs/components/backend/identity-resolution/identity/specs/ADR/0009-cut-over-rename-and-retire.md"
-name = "ADR-0009: Cut-Over Rename and Retire the Rust Stub"
 
 [[systems]]
 name = "Orchestrator"

@@ -1,11 +1,11 @@
-//! Identity Resolution client.
+//! Identity client.
 //!
-//! Calls the Identity Resolution stub service to look up person info by email.
+//! Calls the Identity service to look up person info by email.
 //! Used by the query engine to enrich results with display names and org data.
 
 use serde::{Deserialize, Serialize};
 
-/// Person info returned by the Identity Resolution service.
+/// Person info returned by the Identity service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Person {
     pub email: String,
@@ -29,16 +29,16 @@ pub struct Subordinate {
     pub job_title: String,
 }
 
-/// Identity Resolution API client.
+/// Identity API client.
 #[derive(Clone)]
-pub struct IdentityResolutionClient {
+pub struct IdentityClient {
     base_url: String,
     http: reqwest::Client,
 }
 
-impl IdentityResolutionClient {
+impl IdentityClient {
     /// Create a new client. `base_url` is the identity service root,
-    /// e.g. `http://insight-identity-identity-resolution:8082`.
+    /// e.g. `http://insight-identity:8082`.
     #[must_use]
     pub fn new(base_url: &str) -> Self {
         Self {
@@ -67,8 +67,8 @@ impl IdentityResolutionClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            tracing::warn!(email = %email, status = %status, body = %body, "identity resolution failed");
-            anyhow::bail!("identity resolution returned {status}");
+            tracing::warn!(email = %email, status = %status, body = %body, "identity lookup failed");
+            anyhow::bail!("identity service returned {status}");
         }
 
         let person: Person = resp.json().await?;

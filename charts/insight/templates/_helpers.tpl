@@ -147,9 +147,6 @@ App services are mandatory umbrella components — no deploy flag.
 {{- define "insight.apiGateway.host"          -}}{{- printf "%s-api-gateway"          .Release.Name -}}{{- end -}}
 {{- define "insight.analyticsApi.host"        -}}{{- printf "%s-analytics-api"        .Release.Name -}}{{- end -}}
 {{- define "insight.identity.host"            -}}{{- printf "%s-identity"             .Release.Name -}}{{- end -}}
-{{/* Legacy alias — Rust stub Service. Retained only so existing
-     overrides referencing it keep rendering during the migration. */}}
-{{- define "insight.identityResolution.host"  -}}{{- printf "%s-identity-resolution" .Release.Name -}}{{- end -}}
 {{- define "insight.frontend.host"            -}}{{- printf "%s-frontend"             .Release.Name -}}{{- end -}}
 
 {{/*

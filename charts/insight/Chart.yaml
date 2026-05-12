@@ -98,30 +98,14 @@ dependencies:
     version: "0.1.0"
     repository: "file://../../src/backend/services/analytics-api/helm"
 
-  # Identity Resolution — .NET 9 service that reads from the MariaDB
-  # `persons` table (per identity ADR-0002). This is the canonical
-  # identity-resolution deployment going forward. The legacy Rust stub
-  # (alias `identityResolution`, see below) is retired by default and
-  # kept only for archival; its folder will be removed in a follow-up
-  # cleanup PR. Gated because it needs `persons` populated by the seed
-  # pipeline.
+  # Identity — .NET 9 service that reads from the MariaDB `persons` table
+  # (per identity ADR-0002). Gated because it needs `persons` populated
+  # by the seed pipeline.
   - name: insight-identity
     alias: identity
     version: "0.1.0"
     repository: "file://../../src/backend/services/identity/helm"
     condition: identity.deploy
-
-  # LEGACY — Rust identity-resolution stub. Retired (`deploy: false` by
-  # default). The .NET subchart above (alias `identity`) is the canonical
-  # replacement. Kept here so existing clusters that still set
-  # `identityResolution.deploy=true` keep rendering until they migrate.
-  # Will be removed entirely in a follow-up PR after the migration
-  # window closes.
-  - name: insight-identity-resolution
-    alias: identityResolution
-    version: "0.1.0"
-    repository: "file://../../src/backend/services/identity-old/helm"
-    condition: identityResolution.deploy
 
   - name: insight-frontend
     alias: frontend

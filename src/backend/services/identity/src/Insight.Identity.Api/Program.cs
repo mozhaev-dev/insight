@@ -3,6 +3,7 @@ using Insight.Identity.Api.Configuration;
 using Insight.Identity.Api.Contracts;
 using Insight.Identity.Api.Endpoints;
 using Insight.Identity.Domain.Services;
+using Insight.Identity.Infrastructure;
 using Insight.Identity.Infrastructure.MariaDb;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using MySqlConnector;
 using Serilog;
 using Serilog.Formatting.Compact;
 
@@ -70,6 +72,17 @@ builder.WebHost.UseUrls($"http://{bindAddr}");
 
 var app = builder.Build();
 
+// Schema migrations — apply before opening the HTTP listener so requests
+// never hit an unmigrated database. DbUp tracks applied scripts in its
+// own SchemaVersions table; safe to re-run.
+{
+    var factory = app.Services.GetRequiredService<MariaDbConnectionFactory>();
+    var migrationLogger = app.Services
+        .GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Insight.Identity.Migrations");
+    MigrationRunner.Run(factory.ConnectionString, migrationLogger);
+}
+
 // Request-logging redaction (PRD NFR-3). The default
 // `UseSerilogRequestLogging` enricher captures `RequestPath` as the raw
 // URL, which for `/v1/persons/{email}` would expose the email — PII.
@@ -104,15 +117,31 @@ app.UseExceptionHandler(handler =>
         logger.LogError(ex, "Unhandled exception in {Route}", routeTemplate);
 #pragma warning restore CA1848
 
-        var dbTarget = context.RequestServices.GetService<MariaDbConnectionFactory>()?.Target ?? "unknown";
+        // db_target is meaningful only for DB-origin failures. Including
+        // it on a generic NullReference / DI failure leaks irrelevant
+        // infra detail and confuses callers debugging non-DB errors.
+        var isDbException = ex is MySqlException or System.Data.Common.DbException;
+        string detail;
+        if (ex is null)
+        {
+            detail = "unknown error";
+        }
+        else if (isDbException)
+        {
+            var dbTarget = context.RequestServices.GetService<MariaDbConnectionFactory>()?.Target ?? "unknown";
+            detail = $"{ex.GetType().Name}: {ex.Message} (db_target={dbTarget})";
+        }
+        else
+        {
+            detail = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         var problem = new ProblemResponse(
             Type: "urn:insight:error:internal",
             Title: "Internal Server Error",
             Status: StatusCodes.Status500InternalServerError,
-            Detail: ex is null
-                ? $"unknown error (db_target={dbTarget})"
-                : $"{ex.GetType().Name}: {ex.Message} (db_target={dbTarget})");
+            Detail: detail);
         await context.Response.WriteAsJsonAsync(problem).ConfigureAwait(false);
     });
 });

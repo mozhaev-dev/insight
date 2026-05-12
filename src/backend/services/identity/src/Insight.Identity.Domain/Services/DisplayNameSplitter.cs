@@ -21,22 +21,31 @@ public static class DisplayNameSplitter
 
         var trimmed = displayName.Trim();
 
-        var commaIndex = trimmed.IndexOf(',');
-        if (commaIndex >= 0)
+        if (SplitOn(trimmed, ',') is var (commaBefore, commaAfter) && commaBefore is not null)
         {
-            var last = trimmed[..commaIndex].Trim();
-            var first = trimmed[(commaIndex + 1)..].Trim();
-            return (first, last);
+            // "Last, First" → first goes after the comma, last before.
+            return (commaAfter!, commaBefore);
         }
 
-        var spaceIndex = trimmed.IndexOf(' ');
-        if (spaceIndex < 0)
+        if (SplitOn(trimmed, ' ') is var (spaceBefore, spaceAfter) && spaceBefore is not null)
         {
-            return (trimmed, string.Empty);
+            // "First Rest" → first goes before the space; rest keeps any middle names.
+            return (spaceBefore, spaceAfter!);
         }
 
-        var firstToken = trimmed[..spaceIndex].Trim();
-        var rest = trimmed[(spaceIndex + 1)..].Trim();
-        return (firstToken, rest);
+        return (trimmed, string.Empty);
+    }
+
+    /// <summary>
+    /// Splits <paramref name="input"/> on the first occurrence of
+    /// <paramref name="delimiter"/>, returning the trimmed left and right
+    /// halves. Returns <c>(null, null)</c> when the delimiter is absent.
+    /// </summary>
+    private static (string? Left, string? Right) SplitOn(string input, char delimiter)
+    {
+        var idx = input.IndexOf(delimiter);
+        return idx < 0
+            ? (null, null)
+            : (input[..idx].Trim(), input[(idx + 1)..].Trim());
     }
 }
