@@ -24,7 +24,14 @@ public static class MigrationRunner
 
     public static void Run(string connectionString, ILogger logger)
     {
-        EnsureDatabase.For.MySqlDatabase(connectionString);
+        // We intentionally do NOT call EnsureDatabase.For.MySqlDatabase here.
+        // Per ADR-0006 the empty `identity` database + user GRANTs are
+        // provisioned by the umbrella chart's bitnami MariaDB initdb
+        // ConfigMap (charts/insight/templates/mariadb-initdb-scripts.yaml)
+        // on the first MariaDB pod boot. The service user (`insight`)
+        // only has privileges on the `identity` database and would be
+        // denied access to the `mysql` system database that EnsureDatabase
+        // queries to check for existence.
 
         DatabaseUpgradeResult result = DeployChanges.To
             .MySqlDatabase(connectionString)
