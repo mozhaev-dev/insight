@@ -691,8 +691,11 @@ streams:
               header: Retry-After
           response_filters:
             - type: HttpResponseFilter
+              action: RATE_LIMITED
+              http_codes: [429]
+            - type: HttpResponseFilter
               action: RETRY
-              http_codes: [429, 503]
+              http_codes: [503]
             - type: HttpResponseFilter
               action: FAIL
               http_codes: [403]
@@ -801,8 +804,11 @@ streams:
               header: Retry-After
           response_filters:
             - type: HttpResponseFilter
+              action: RATE_LIMITED
+              http_codes: [429]
+            - type: HttpResponseFilter
               action: RETRY
-              http_codes: [429, 503]
+              http_codes: [503]
             - type: HttpResponseFilter
               action: FAIL
               http_codes: [403]
