@@ -16,13 +16,20 @@ resolves to. Works in both modes from a single source of truth:
                                        SQL, …); this Job dials
                                        `mariadb.host` directly.
 
-Hook timing: `post-install,post-upgrade` (NOT pre-*). The Job's pod
-mounts `insight-db-creds` for the root password — that Secret is
-emitted by the chart's regular templates (or pre-created by the
-operator in BYO/gitops mode) and is therefore available AFTER the
-main release manifests apply, which is precisely when post-install
-fires. The previous pre-install attempt raced against this and is the
-reason the earlier `identity-db-init-job.yaml` was rolled back.
+Hook timing: `pre-install,pre-upgrade`. The DB must exist BEFORE the
+application pods (identity, etc.) start — otherwise their migration
+init-containers / DbUp loops fail and helm's `--wait` blocks on
+CrashLoopBackOff'd pods until the timeout, never reaching post-*
+hooks. Pre-* fires BEFORE main resources apply, so by the time the
+identity pod is scheduled, the database already exists.
+
+Prerequisite: `insight-db-creds` must exist in the namespace BEFORE
+helm install/upgrade runs. In gitops mode (`apply-app-secrets` step
+of `make deploy`) and on upgrades in autoGenerate mode (Secret
+persists across releases), this holds. Fresh autoGenerate-mode
+installs (dev-up.sh path on a brand-new namespace) need a separate
+fix — likely converting the Secret template into a hook itself with
+hook-weight < 5 — tracked separately.
 
 Idempotent. Re-runs on every upgrade — both `CREATE DATABASE IF NOT
 EXISTS` and `GRANT ALL` are no-ops on the second-and-later runs.
@@ -39,7 +46,7 @@ kind: Job
 metadata:
   name: {{ include "insight.fullname" . }}-mariadb-init-svcdbs
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "5"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   labels:
