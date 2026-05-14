@@ -37,8 +37,12 @@ spec:
     {{- end }}
     volumes:
       - name: insight-reconcile-logs
+        {{- if .Values.ingestion.reconcile.logs.persistent }}
         persistentVolumeClaim:
           claimName: {{ include "insight.fullname" . }}-reconcile-logs
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
     templates:
       - name: run
         container:

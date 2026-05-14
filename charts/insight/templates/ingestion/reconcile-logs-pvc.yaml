@@ -1,4 +1,18 @@
-{{- if .Values.ingestion.templates.enabled }}
+{{/*
+PVC for reconcile-loop logs. Only emitted when
+`ingestion.reconcile.logs.persistent: true` AND
+`ingestion.templates.enabled: true`. Default behaviour is emptyDir
+(no PVC, no cluster-side StorageClass dependency, no Pending-PVC
+blocking `helm --wait`).
+
+When enabling persistence, the referenced StorageClass MUST have
+`volumeBindingMode: Immediate`. With the default `WaitForFirstConsumer`
+behaviour of most cluster local-path provisioners, the PVC stays
+Pending until a workflow pod is scheduled — but workflow pods only
+exist while a Workflow is running on schedule, so the PVC never
+binds, helm-wait times out, atomic rollback kicks in.
+*/}}
+{{- if and .Values.ingestion.templates.enabled .Values.ingestion.reconcile.logs.persistent }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
