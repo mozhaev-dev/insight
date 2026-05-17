@@ -15,6 +15,10 @@
 //!   - `flow_efficiency`          median(per-issue %) → 100 * Σdev / Σlead
 //!     (clamped to ≤100)
 //!   - `worklog_logging_accuracy` symmetric fold(daily %) → 100 * Σworklog / `Σin_progress`
+//!     (clamped to ≤100 — the predecessor's symmetric folding was bounded
+//!     to `[0, 100]` and the FE gauge expects that range; retroactive
+//!     worklog can push the raw Σ/Σ ratio above 100 which would break
+//!     the chart scale)
 //!
 //! Preserved unchanged:
 //!   - `tasks_completed`, `stale_in_progress`        — period sum
@@ -90,8 +94,9 @@ fn wide_aggregate_pp() -> &'static str {
                                        / sumIf(metric_value, metric_key = 'flow_efficiency_den'), 1)), \
             CAST(NULL AS Nullable(Float64))) AS flow_efficiency_v, \
          if(sumIf(metric_value, metric_key = 'in_progress_seconds') > 0, \
-            round(toFloat64(100) * sumIf(metric_value, metric_key = 'worklog_seconds') \
-                                 / sumIf(metric_value, metric_key = 'in_progress_seconds'), 1), \
+            least(toFloat64(100), \
+                  round(toFloat64(100) * sumIf(metric_value, metric_key = 'worklog_seconds') \
+                                       / sumIf(metric_value, metric_key = 'in_progress_seconds'), 1)), \
             CAST(NULL AS Nullable(Float64))) AS worklog_logging_accuracy_v, \
          if(countIf(metric_key = 'estimation_accuracy' AND metric_value > 0 AND metric_value <= 200) > 0, \
             greatest(toFloat64(0), \
@@ -265,5 +270,170 @@ impl MigrationTrait for Migration {
             .await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These tests are intentionally string-contains rather than full SQL
+    // equality. The goal is to catch the high-impact regressions that a
+    // typo in this PR would propagate to PR 4-7 (each of which copies
+    // this pattern for a different bullet section):
+    //   - misspelled `metric_key` literal (e.g. `due_date_on_time` →
+    //     `due_date_ontime`) would silently aggregate to NULL because
+    //     no row in the view matches.
+    //   - missing composite-ratio formula or a clamped/unclamped
+    //     mismatch between caller's expectations and current logic.
+    //   - `p` and `inner_c` of the JOIN going out of sync — both must
+    //     reference the same wide-aggregate shape (`{pp}` helper).
+    //
+    // Read-the-binary tests are easier to maintain than ClickHouse
+    // round-trip tests and don't need a running cluster.
+
+    /// Every FE-visible `metric_key` the bullet section emits must appear
+    /// as an `('X', X_v)` entry in the ARRAY JOIN unpivot.
+    const EXPECTED_METRIC_KEYS: &[&str] = &[
+        "tasks_completed",
+        "stale_in_progress",
+        "task_dev_time",
+        "mean_time_to_resolution",
+        "pickup_time",
+        "task_reopen_rate",
+        "due_date_compliance",
+        "bugs_to_task_ratio",
+        "flow_efficiency",
+        "worklog_logging_accuracy",
+        "estimation_accuracy",
+    ];
+
+    /// Every raw `metric_key` the view emits that the `query_ref` reads
+    /// via `sumIf`/`avgIf`/`countIf`/`quantileExactIf` must appear as a
+    /// literal in the wide-aggregate. A typo here silently aggregates
+    /// the column to NULL because no view row matches.
+    const EXPECTED_RAW_KEYS_READ_BY_QUERY: &[&str] = &[
+        "tasks_completed",
+        "stale_in_progress",
+        "task_dev_time",
+        "mean_time_to_resolution",
+        "pickup_time",
+        "task_reopen_rate",
+        "due_date_on_time",
+        "due_date_with_due",
+        "bugs_fixed",
+        "flow_efficiency_num",
+        "flow_efficiency_den",
+        "worklog_seconds",
+        "in_progress_seconds",
+        "estimation_accuracy",
+    ];
+
+    fn assert_query_shape(query: &str, label: &str) {
+        // Both sides of the JOIN read from the same source table.
+        let table_refs = query.matches("insight.task_delivery_bullet_rows").count();
+        assert_eq!(
+            table_refs, 2,
+            "{label}: expected 2 references to `insight.task_delivery_bullet_rows` (one per JOIN side, no CTE hoist yet — see issue #433 §3.4), got {table_refs}"
+        );
+
+        // Each side has its own GROUP BY person_id wide-aggregate.
+        let person_groupbys = query.matches("GROUP BY person_id").count();
+        assert_eq!(
+            person_groupbys, 2,
+            "{label}: expected 2 occurrences of `GROUP BY person_id` (p and inner_c), got {person_groupbys}"
+        );
+
+        // FE-visible metric_keys are unpivoted via ARRAY JOIN.
+        for key in EXPECTED_METRIC_KEYS {
+            let literal = format!("'{key}'");
+            assert!(
+                query.contains(&literal),
+                "{label}: missing FE-visible metric_key literal {literal} in ARRAY JOIN unpivot"
+            );
+        }
+
+        // Raw metric_keys the wide-aggregate reads from the view must
+        // match what the view emits. A typo here = silent NULL.
+        for key in EXPECTED_RAW_KEYS_READ_BY_QUERY {
+            let read = format!("metric_key = '{key}'");
+            assert!(
+                query.contains(&read),
+                "{label}: missing read of raw metric_key {key} (`metric_key = '{key}'`) in wide-aggregate"
+            );
+        }
+
+        // worklog_logging_accuracy must be clamped to ≤100 — predecessor
+        // used symmetric folding bounded to [0, 100]; FE gauge expects
+        // that range.
+        assert!(
+            query.contains("worklog_logging_accuracy_v"),
+            "{label}: missing worklog_logging_accuracy_v formula"
+        );
+        // Find the worklog_logging_accuracy_v formula and check it
+        // contains a `least` call (the clamp). This is heuristic but
+        // catches the most likely regression.
+        let Some(worklog_start) = query.find("worklog_logging_accuracy_v") else {
+            panic!("{label}: worklog_logging_accuracy_v not found");
+        };
+        // Look backward up to 400 chars for the start of the formula
+        // (well-bounded by surrounding `if(...)` wrapper).
+        let formula_start = worklog_start.saturating_sub(400);
+        let formula_window = &query[formula_start..worklog_start];
+        assert!(
+            formula_window.contains("least(toFloat64(100)"),
+            "{label}: worklog_logging_accuracy_v must be clamped via least(toFloat64(100), …); got:\n{formula_window}"
+        );
+
+        // flow_efficiency also clamped.
+        let Some(flow_start) = query.find("flow_efficiency_v") else {
+            panic!("{label}: flow_efficiency_v not found");
+        };
+        let formula_start = flow_start.saturating_sub(400);
+        let formula_window = &query[formula_start..flow_start];
+        assert!(
+            formula_window.contains("least(toFloat64(100)"),
+            "{label}: flow_efficiency_v must be clamped via least(toFloat64(100), …)"
+        );
+    }
+
+    #[test]
+    fn team_query_shape() {
+        let q = team_query();
+        assert_query_shape(&q, "team_query");
+        // Team-scope: company-wide median (not partitioned by org_unit_id).
+        assert!(
+            q.contains("company_median") && q.contains("company_min") && q.contains("company_max"),
+            "team_query must expose company_* range, got:\n{q}"
+        );
+        assert!(
+            !q.contains("team_median"),
+            "team_query must NOT use team_median (that's the IC-side label)"
+        );
+        // Outer join key is metric_key only (no org_unit_id pairing).
+        assert!(
+            q.contains("ON c.metric_key = p.metric_key"),
+            "team_query JOIN must be on metric_key alone"
+        );
+    }
+
+    #[test]
+    fn ic_query_shape() {
+        let q = ic_query();
+        assert_query_shape(&q, "ic_query");
+        // IC-scope: team-wide median (partitioned by org_unit_id).
+        assert!(
+            q.contains("team_median") && q.contains("team_min") && q.contains("team_max"),
+            "ic_query must expose team_* range, got:\n{q}"
+        );
+        assert!(
+            !q.contains("company_median"),
+            "ic_query must NOT use company_median (that's the Team-side label)"
+        );
+        // Outer join key includes org_unit_id.
+        assert!(
+            q.contains("c.org_unit_id = p.org_unit_id"),
+            "ic_query JOIN must include org_unit_id"
+        );
     }
 }

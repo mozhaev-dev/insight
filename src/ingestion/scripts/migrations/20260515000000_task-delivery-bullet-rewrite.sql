@@ -56,7 +56,7 @@
 --
 -- Branch shape after rewrite (5 branches, source-aligned):
 --
---   1. `jira_closed_tasks`            → 6 keys via ARRAY JOIN
+--   1. `jira_closed_tasks`            → 5 keys via ARRAY JOIN
 --   2. `task_dev_seconds_per_issue`   → 5 keys via ARRAY JOIN
 --   3. `task_close_events_daily`      → 1 key (`+task_reopen_rate`)
 --   4. `task_reopen_events_daily`     → 1 key (`-task_reopen_rate`)
@@ -66,7 +66,7 @@
 --                                     → 2 keys via ARRAY JOIN (worklog num/den)
 --   6. `task_issue_current_state`     → 1 key (`stale_in_progress` snapshot)
 --
--- 16 distinct metric_keys after rewrite. Composite-ratio metric_keys
+-- 15 distinct metric_keys after rewrite. Composite-ratio metric_keys
 -- visible on FE (`due_date_compliance`, `bugs_to_task_ratio`,
 -- `flow_efficiency`, `worklog_logging_accuracy`) live ONLY in the
 -- `query_ref` projection — they are not emitted by the view.
@@ -77,9 +77,8 @@ DROP VIEW IF EXISTS insight.task_delivery_bullet_rows;
 CREATE VIEW insight.task_delivery_bullet_rows AS
 
 -- ─── Branch 1: jira_closed_tasks (per-person-per-day aggregate) ──────
--- Emits 6 keys: tasks_completed, due_date_on_time, due_date_with_due,
--- estimation_accuracy (daily %; see header §2 caveat),
--- estimation_samples (count of valid days for accuracy folding), bugs_fixed.
+-- Emits 5 keys: tasks_completed, due_date_on_time, due_date_with_due,
+-- estimation_accuracy (daily %; see header §2 caveat), bugs_fixed.
 SELECT
     j.person_id                                                  AS person_id,
     p.org_unit_id                                                AS org_unit_id,
@@ -102,21 +101,14 @@ ARRAY JOIN [
     -- spent <= 0 or estimate missing. The silver layer stores avg_*
     -- scalars per person-day, not per-task arrays, so a true Σnum/Σden
     -- isn't possible without changing silver. query_ref applies
-    -- symmetric folding (100 - avg(|100 - daily%|)) over valid days.
+    -- symmetric folding (100 - avg(|100 - daily%|)) over valid days
+    -- using `avgIf`/`countIf` over the non-NULL rows directly — no
+    -- separate "samples" sibling metric is needed.
     ('estimation_accuracy',
         if(ifNull(j.avg_time_spent, toFloat64(0)) > 0
            AND j.avg_time_estimate IS NOT NULL,
            CAST(round((j.avg_time_estimate / j.avg_time_spent) * 100, 1)
                 AS Nullable(Float64)),
-           CAST(NULL AS Nullable(Float64)))),
-
-    -- estimation_samples: 1 per valid day (used as denominator weight
-    -- by query_ref when averaging |100 - daily%|). Without this, days
-    -- with NULL daily% would shift the weighted denominator.
-    ('estimation_samples',
-        if(ifNull(j.avg_time_spent, toFloat64(0)) > 0
-           AND j.avg_time_estimate IS NOT NULL,
-           CAST(toFloat64(1) AS Nullable(Float64)),
            CAST(NULL AS Nullable(Float64)))),
 
     ('bugs_fixed',
