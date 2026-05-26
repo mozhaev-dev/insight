@@ -66,6 +66,12 @@ builder.Services.AddSingleton<IVisibilityReader>(sp => sp.GetRequiredService<Vis
 builder.Services.AddSingleton<RolesRepository>();
 builder.Services.AddSingleton<IRolesReader>(sp => sp.GetRequiredService<RolesRepository>());
 builder.Services.AddSingleton<IPersonRolesReader>(sp => sp.GetRequiredService<RolesRepository>());
+builder.Services.AddSingleton<VisibilityService>();
+
+// #348 Phase 3: depth-bounded subchart endpoint.
+builder.Services.AddSingleton<SubchartRepository>();
+builder.Services.AddSingleton<ISubchartReader>(sp => sp.GetRequiredService<SubchartRepository>());
+builder.Services.AddSingleton<SubchartService>();
 
 // FluentValidation — Phase 2 POST /v1/profiles body. Scans the Api
 // assembly for AbstractValidator<T> implementations.
@@ -124,6 +130,26 @@ builder.Services
         };
     });
 
+// Caller resolver — header-driven; api-gateway sets `X-Insight-Person-Id`
+// from the validated JWT subject.
+builder.Services.AddSingleton<ICallerContext, HeaderCallerContext>();
+
+// Composite admin-probe — used by CRUD endpoints on /v1/visibility,
+// /v1/roles, /v1/person-roles to gate by the `admin` role.
+builder.Services.AddSingleton<CallerAdminCheck>();
+
+// JSON wire convention: snake_case on every Minimal-API surface (request
+// body + response body). Lets DTOs in `Contracts/` declare plain PascalCase
+// properties and rely on the policy for serialisation — no per-property
+// `[JsonPropertyName]` attributes. Test clients deliberately use the same
+// policy via `JsonExtensions.PostJsonAsync` / `ReadJsonAsync` so wire-format
+// drift between server and tests is impossible.
+builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(o =>
+{
+    o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+    o.SerializerOptions.DictionaryKeyPolicy  = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+});
+
 builder.Services.AddRouting();
 
 var bindAddr = builder.Configuration[$"{AppOptions.SectionName}:bind_addr"]
@@ -138,10 +164,19 @@ var app = builder.Build();
 // own SchemaVersions table; safe to re-run.
 {
     var factory = app.Services.GetRequiredService<MariaDbConnectionFactory>();
-    var migrationLogger = app.Services
-        .GetRequiredService<ILoggerFactory>()
-        .CreateLogger("Insight.Identity.Migrations");
+    var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+    var migrationLogger = loggerFactory.CreateLogger("Insight.Identity.Migrations");
     MigrationRunner.Run(factory.ConnectionString, migrationLogger);
+
+    // Bootstrap admin — chicken-and-egg seed for the OrgChart Visibility tables.
+    // Idempotent: only inserts when no active assignment for the
+    // configured (tenant, person, admin-role) triple exists.
+    var bootstrapLogger = loggerFactory.CreateLogger("Insight.Identity.Bootstrap");
+    var appOptions = app.Services
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<AppOptions>>().Value;
+    await BootstrapAdminRunner.RunAsync(
+        factory, appOptions.TenantDefaultId, appOptions.BootstrapAdminPersonId, bootstrapLogger)
+        .ConfigureAwait(false);
 }
 
 // Request-logging redaction (PRD NFR-3). The default
@@ -213,6 +248,10 @@ app.UseExceptionHandler(handler =>
 app.UseAuthentication();
 
 app.MapPersonsEndpoints();
+app.MapVisibilityEndpoints();
+app.MapRoleEndpoints();
+app.MapPersonRoleEndpoints();
+app.MapSubchartEndpoints();
 
 await app.RunAsync().ConfigureAwait(false);
 

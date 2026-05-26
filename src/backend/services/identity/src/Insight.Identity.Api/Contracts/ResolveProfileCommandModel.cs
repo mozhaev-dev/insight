@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace Insight.Identity.Api.Contracts;
 
 /// <summary>
@@ -17,10 +15,12 @@ namespace Insight.Identity.Api.Contracts;
 ///   </item>
 /// </list>
 /// The handler resolves to exactly one <c>person_id</c>; multiple matches
-/// surface as <c>422 urn:insight:error:ambiguous_profile</c>.
+/// surface as <c>422 urn:insight:error:ambiguous_profile</c>. Property
+/// names serialise via the project-wide <c>JsonNamingPolicy.SnakeCaseLower</c>
+/// policy.
 /// </summary>
 public sealed record ResolveProfileCommandModel(
-    [property: JsonPropertyName("value_type")] string? ValueType,
-    [property: JsonPropertyName("value")] string? Value,
-    [property: JsonPropertyName("insight_source_type")] string? InsightSourceType,
-    [property: JsonPropertyName("insight_source_id")] Guid? InsightSourceId);
+    string? ValueType,
+    string? Value,
+    string? InsightSourceType,
+    Guid? InsightSourceId);

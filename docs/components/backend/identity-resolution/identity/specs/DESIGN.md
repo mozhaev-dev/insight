@@ -17,6 +17,7 @@
   - [3.5 External Dependencies](#35-external-dependencies)
   - [3.6 Interactions & Sequences](#36-interactions--sequences)
   - [3.7 Database schemas & tables](#37-database-schemas--tables)
+  - [3.8 Schema + Naming Conventions](#38-schema--naming-conventions)
 - [4. Additional context](#4-additional-context)
   - [4.1 Configuration surface](#41-configuration-surface)
   - [4.2 Logging shape](#42-logging-shape)
@@ -59,6 +60,9 @@ Architecture-shaping decisions are captured as ADRs in
 - [`cpt-insightspec-adr-0009-post-profile-with-uniqueness-invariant`](ADR/0009-post-profile-with-uniqueness-invariant.md) — `POST /v1/profiles` with single-result invariant (Phase 2).
 - [`cpt-insightspec-adr-0010-org-chart-cache`](ADR/0010-org-chart-cache.md) — Materialised SCD2 cache for person parent/child edges (`org_chart`).
 - [`cpt-insightspec-adr-0011-persons-relax-uniqueness-and-collation`](ADR/0011-persons-relax-uniqueness-and-collation.md) — Persons relax UNIQUE + switch `value_id` to case-insensitive collation.
+- [`cpt-insightspec-adr-0012-admin-only-orgchart-visibility-reads`](ADR/0012-admin-only-orgchart-visibility-reads.md) — Admin-only reads on `/v1/visibility`, `/v1/roles`, `/v1/person-roles`.
+- [`cpt-insightspec-adr-0013-roles-hard-delete-with-in-use-guard`](ADR/0013-roles-hard-delete-with-in-use-guard.md) — `roles` hard-DELETE guarded by active-assignment count (422 `urn:insight:error:role_in_use`).
+- [`cpt-insightspec-adr-0014-last-admin-protection`](ADR/0014-last-admin-protection.md) — Refuse to revoke the last active admin assignment in a tenant.
 
 #### Functional Drivers
 
@@ -571,10 +575,23 @@ Read paths in Phase 1:
   `WHERE parent_person_id=@p AND valid_to IS NULL` against
   `idx_current_children`.
 
-Phase 2 callers will project these onto the `/v1/persons` and
+Phase 2 callers project these onto the `/v1/persons` and
 `/v1/profiles` response shapes (designated-source supervisor +
 per-source detail). Phase 3 (`/v1/subchart/{person_id}?depth=N`,
-issue #348) walks the table via a depth-bounded recursive CTE.
+issue #348) walks the table via a depth-bounded recursive CTE in a
+single round-trip — `SqlSubchart.GetSubchart` joins a recursive
+`subtree` CTE rooted at `@root_person_id` (depth-bounded by the
+optional `@max_depth` parameter; null = unbounded, capped by
+MariaDB's `cte_max_recursion_depth = 1000`) against a derived
+`latest_obs` CTE that picks the latest `(person, value_type)`
+observation per partition via `ROW_NUMBER() OVER (...)`. Tenant +
+source-type scoping is bound on both CTEs. The result is a flat
+row set ordered by depth; the C# service layer (`SubchartService`)
+assembles the tree by indexing on `parent_person_id`. Visibility is
+applied via `VisibilityService.CanSeeAsync` on the root only — the
+visibility CTE is closed under `org_chart` descent, so once the
+viewer can see the root every descendant is already in their
+visible set.
 
 #### Table: `SchemaVersions` (MariaDB, DbUp-managed)
 
@@ -605,9 +622,19 @@ touch (per the project-wide "consistency over scope" rule).
    on read.
 
 2. **`valid_from` / `valid_to` SCD2 columns** are `DATETIME(6) NOT NULL`
-   (no default — filled at INSERT with `UTC_TIMESTAMP(6)`). `valid_to`
-   is NULL for the currently-active row; the schema enforces the
-   sane interval order via `CHECK (valid_to IS NULL OR valid_from <= valid_to)`.
+   (no column-level default — filled at INSERT). `valid_to` is NULL
+   for the currently-active row; the schema enforces the sane
+   interval order via `CHECK (valid_to IS NULL OR valid_from <= valid_to)`.
+
+   **`valid_from` default-on-INSERT semantics:** when the caller
+   doesn't supply `valid_from` (POST body field omitted / null), the
+   INSERT statement substitutes `UTC_TIMESTAMP(6)` server-side via
+   `IFNULL(@valid_from, UTC_TIMESTAMP(6))`. The repository binds
+   `DBNull` for the parameter rather than passing C#'s
+   `DateTime.UtcNow`; both timestamps in a subsequent
+   `valid_to = UTC_TIMESTAMP(6)` soft-delete then come from the same
+   clock (the DB server) and the CHECK constraint cannot fail under
+   client/server clock skew.
 
 3. **Optional free-text columns** (`reason`, comment-style audit) are
    `VARCHAR(N) NULL` or `TEXT NULL`. NULL == "no value provided",
@@ -634,7 +661,7 @@ table name. Examples:
 |---|---|
 | `visibility` | `Visibility` |
 | `roles` | `Role` |
-| `person_roles` | `PersonRole` (junction; RBAC: "a Role-as-held-by-a-Person", mirrors ALMS3 `UserRole`) |
+| `person_roles` | `PersonRole` (junction over `persons` + `roles`; mirrors ALMS3 `UserRole`) |
 
 **Exception — observation log / append-only event tables:** when
 the table is a log/event-stream AND there's a separate aggregate

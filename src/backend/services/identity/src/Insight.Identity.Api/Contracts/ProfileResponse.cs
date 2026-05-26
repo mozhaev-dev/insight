@@ -10,28 +10,33 @@ namespace Insight.Identity.Api.Contracts;
 /// <see cref="EmployeeId"/>, and <see cref="Ids"/> — every current
 /// <c>value_type='id'</c> observation, one per (source_type,
 /// source_id) instance). Null-valued optional fields are omitted
-/// from JSON to keep the payload tight.
+/// from JSON to keep the payload tight. Property names are
+/// serialised in snake_case via the project-wide
+/// <c>JsonNamingPolicy.SnakeCaseLower</c> policy configured in
+/// <c>Program.cs</c>; the only attributes here are the
+/// <see cref="JsonIgnoreAttribute"/> directives that control the
+/// null-write behaviour.
 /// </summary>
 public sealed record ProfileResponse(
-    [property: JsonPropertyName("person_id")] Guid PersonId,
-    [property: JsonPropertyName("insight_tenant_id")] Guid InsightTenantId,
-    [property: JsonPropertyName("email")] string? Email,
-    [property: JsonPropertyName("display_name")] string? DisplayName,
-    [property: JsonPropertyName("first_name"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FirstName,
-    [property: JsonPropertyName("last_name"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? LastName,
-    [property: JsonPropertyName("department"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Department,
-    [property: JsonPropertyName("division"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Division,
-    [property: JsonPropertyName("job_title"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? JobTitle,
-    [property: JsonPropertyName("status"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Status,
-    [property: JsonPropertyName("username"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Username,
-    [property: JsonPropertyName("employee_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? EmployeeId,
-    [property: JsonPropertyName("supervisor_email"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SupervisorEmail,
-    [property: JsonPropertyName("supervisor_name"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SupervisorName,
-    [property: JsonPropertyName("parent_email"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ParentEmail,
-    [property: JsonPropertyName("parent_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ParentId,
-    [property: JsonPropertyName("parent_person_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? ParentPersonId,
-    [property: JsonPropertyName("subordinates")] IReadOnlyList<PersonResponse> Subordinates,
-    [property: JsonPropertyName("ids")] IReadOnlyList<ProfileIdEntry> Ids)
+    Guid PersonId,
+    Guid InsightTenantId,
+    string? Email,
+    string? DisplayName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FirstName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? LastName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Department,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Division,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? JobTitle,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Status,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Username,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? EmployeeId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SupervisorEmail,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SupervisorName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ParentEmail,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ParentId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? ParentPersonId,
+    IReadOnlyList<PersonResponse> Subordinates,
+    IReadOnlyList<ProfileIdEntry> Ids)
 {
     public static ProfileResponse From(Profile profile)
     {

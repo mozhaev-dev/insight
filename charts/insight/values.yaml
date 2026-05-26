@@ -144,7 +144,7 @@ ingestion:
   # `serviceaccount "argo-workflow" not found`.
   templates:
     enabled: true
-  toolboxImage: "ghcr.io/cyberfabric/insight-toolbox:2026.05.20.16.41-a5a9495" # e.g. "ghcr.io/cyberfabric/insight-toolbox:2026.04.28.10.34-b08b460"
+  toolboxImage: "ghcr.io/cyberfabric/insight-toolbox:2026.05.25.09.16-9a55c4c" # e.g. "ghcr.io/cyberfabric/insight-toolbox:2026.04.28.10.34-b08b460"
   # airbyte-sync poll-job tunables — see templates/ingestion/airbyte-sync.yaml.
   # The poll loop replaces a wall-clock deadline with a progress watchdog:
   # it tracks (status, bytesEmitted, recordsEmitted, stateMessagesEmitted)
@@ -447,6 +447,19 @@ identity:
   # string falls back to the appsettings default `bamboohr`; set
   # explicitly here to pin the active source per environment.
   orgChartSourceType: ""
+  # First-admin seed for the OrgChart Visibility CRUD endpoints
+  # (#346 step 5). On pod start, BootstrapAdminRunner idempotently
+  # inserts an `admin` row in `person_roles` for the
+  # (tenant_default_id, this person UUID, Roles.Admin) triple — but
+  # only when no active admin assignment for that triple exists yet.
+  # The person UUID MUST already exist in `persons` for the same
+  # tenant (the foreign-key contract on `person_roles.person_id`,
+  # see DESIGN §3.8); operators should seed the person row out-of-
+  # band via the regular ingestion pipeline before flipping this.
+  # Empty string disables the runner — the chicken-and-egg between
+  # admin-gated CRUD and an empty `person_roles` must then be
+  # broken by direct SQL.
+  bootstrapAdminPersonId: ""
   # When deploy=true the umbrella also generates `insight-identity-config`
   # with IDENTITY__* env vars sourced from the auto-generated MariaDB
   # credentials in `insight-db-creds`.

@@ -28,6 +28,26 @@ public interface IPersonRolesReader
         Guid tenantId,
         Guid personId,
         CancellationToken cancellationToken);
+
+    /// <summary>One row by <c>person_role_id</c>, or <c>null</c>.</summary>
+    Task<PersonRole?> GetPersonRoleByIdAsync(Guid personRoleId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Paged list, newest first. Filters: <paramref name="filterByPerson"/>
+    /// (all roles for one person) or <paramref name="filterByRole"/>
+    /// (all holders of one role). <paramref name="activeOnly"/>
+    /// restricts to <c>valid_to IS NULL</c>.
+    /// </summary>
+    Task<PagedResult<PersonRole>> ListAsync(
+        Guid tenantId,
+        Guid? filterByPerson,
+        Guid? filterByRole,
+        bool activeOnly,
+        PageRequest page,
+        CancellationToken cancellationToken);
+
+    /// <summary>Count active assignments of one role in one tenant. Used by the role-delete guard.</summary>
+    Task<int> CountActiveByRoleAsync(Guid tenantId, Guid roleId, CancellationToken cancellationToken);
 }
 
 /// <summary>One row of the <c>person_roles</c> junction.</summary>

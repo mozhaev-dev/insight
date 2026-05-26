@@ -11,14 +11,15 @@ namespace Insight.Identity.Tests.Integration;
 [Collection(MariaDbCollection.Name)]
 public sealed class OrgTreeEndpointTests : IAsyncLifetime
 {
-    private static readonly Guid TenantId       = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
-    private static readonly Guid BambooSourceId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
-    private static readonly Guid SlackSourceId  = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
-    private static readonly Guid CarolPersonId  = Guid.Parse("11111111-1111-1111-1111-111111111111");
-    private static readonly Guid BobPersonId    = Guid.Parse("22222222-2222-2222-2222-222222222222");
-    private static readonly Guid AlicePersonId  = Guid.Parse("33333333-3333-3333-3333-333333333333");
-    private static readonly Guid DavePersonId   = Guid.Parse("44444444-4444-4444-4444-444444444444");
-    private static readonly Guid AuthorPersonId = Guid.Empty;
+    private static readonly Guid TenantId        = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    private static readonly Guid BambooSourceId  = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    private static readonly Guid SlackSourceId   = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+    private static readonly Guid CarolPersonId   = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid BobPersonId     = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    private static readonly Guid AlicePersonId   = Guid.Parse("33333333-3333-3333-3333-333333333333");
+    private static readonly Guid DavePersonId    = Guid.Parse("44444444-4444-4444-4444-444444444444");
+    private static readonly Guid CallerPersonId  = Guid.Parse("ddddddd0-0000-0000-0000-000000000002");
+    private static readonly Guid AuthorPersonId  = Guid.Empty;
     private static readonly string[] BobReportEmails = { "alice@example.com", "dave@example.com" };
 
     private readonly MariaDbFixture _fixture;
@@ -29,7 +30,8 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         await _fixture.ResetAsync().ConfigureAwait(false);
-        _app = new TestApplicationFactory(_fixture.ConnectionString, TenantId);
+        _app = new TestApplicationFactory(_fixture.ConnectionString, TenantId, defaultCallerPersonId: CallerPersonId);
+        await _fixture.SeedWholeTenantVisibilityAsync(TenantId, CallerPersonId).ConfigureAwait(false);
         await SeedTreeAsync().ConfigureAwait(false);
     }
 
@@ -53,7 +55,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         response.Headers.GetValues("Link").Should().ContainSingle()
             .Which.Should().Contain("/v1/profiles").And.Contain("rel=\"successor-version\"");
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("person_id").GetGuid().Should().Be(AlicePersonId);
         doc.GetProperty("email").GetString().Should().Be("alice@example.com");
@@ -82,7 +84,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("email").GetString().Should().Be("bob@example.com");
 
@@ -112,7 +114,7 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
         doc.GetProperty("parent_person_id").GetGuid().Should().Be(BobPersonId);
         doc.GetProperty("supervisor_email").GetString().Should().Be("bob@example.com");
     }
@@ -126,13 +128,14 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         using var app = new TestApplicationFactory(
             _fixture.ConnectionString,
             TenantId,
+            defaultCallerPersonId: CallerPersonId,
             expandSubordinates: false);
         var client = app.CreateClient();
         var response = await client.GetAsync(new Uri("/v1/persons/bob@example.com", UriKind.Relative))
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         doc.GetProperty("email").GetString().Should().Be("bob@example.com");
 
@@ -150,11 +153,11 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "alice@example.com", null, null);
 
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         // Profile-specific fields.
         doc.GetProperty("person_id").GetGuid().Should().Be(AlicePersonId);
@@ -180,11 +183,11 @@ public sealed class OrgTreeEndpointTests : IAsyncLifetime
         var client = _app!.CreateClient();
         var body = new ResolveProfileCommandModel("email", "carol@example.com", null, null);
 
-        var response = await client.PostAsJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
+        var response = await client.PostJsonAsync(new Uri("/v1/profiles", UriKind.Relative), body)
             .ConfigureAwait(false);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var doc = await response.Content.ReadFromJsonAsync<JsonElement>().ConfigureAwait(false);
+        var doc = await response.ReadJsonAsync<JsonElement>().ConfigureAwait(false);
 
         // Carol is the root — no supervisor.
         // Null-condition serialisation drops the property entirely for

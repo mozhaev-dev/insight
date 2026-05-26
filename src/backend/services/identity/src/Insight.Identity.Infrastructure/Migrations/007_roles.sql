@@ -1,4 +1,4 @@
--- Role catalogue — strict-minimum RBAC primitive (#346 design rev 3.1).
+-- Role catalogue — strict-minimum OrgChart Visibility primitive (#346 design rev 3.1).
 -- Currently one row: 'admin', which gates CRUD on the visibility,
 -- roles, and person_roles tables themselves. Future roles (auditor,
 -- hr_admin, ...) can be added by INSERTing further rows; the schema

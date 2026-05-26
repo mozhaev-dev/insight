@@ -1,8 +1,9 @@
 namespace Insight.Identity.Domain.Services;
 
 /// <summary>
-/// Read-side port over the strict-minimum `roles` catalogue. RBAC
-/// primitive — currently one row (`admin`); see #346 design rev 3.1.
+/// Read-side port over the strict-minimum `roles` catalogue. OrgChart
+/// Visibility primitive — currently one row (`admin`); see #346 design
+/// rev 3.1.
 /// </summary>
 public interface IRolesReader
 {
@@ -15,6 +16,9 @@ public interface IRolesReader
 
     /// <summary>Enumerate every role row.</summary>
     Task<IReadOnlyList<Role>> ListAllAsync(CancellationToken cancellationToken);
+
+    /// <summary>One role by id, or <c>null</c>.</summary>
+    Task<Role?> GetRoleByIdAsync(Guid roleId, CancellationToken cancellationToken);
 }
 
 /// <summary>One `roles` row projected into the domain layer.</summary>

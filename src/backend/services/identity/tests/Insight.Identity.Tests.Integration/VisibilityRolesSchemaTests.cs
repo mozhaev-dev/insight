@@ -120,7 +120,7 @@ public sealed class VisibilityRolesSchemaTests : IAsyncLifetime
     [Fact]
     public async Task GetActiveGrantsByViewer_returns_empty_when_no_grants()
     {
-        var grants = await _visibility!.GetActiveGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
+        var grants = await _visibility!.GetActiveVisibilityGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
         grants.Should().BeEmpty();
     }
 
@@ -130,7 +130,7 @@ public sealed class VisibilityRolesSchemaTests : IAsyncLifetime
         var grantId = Guid.NewGuid();
         await InsertVisibilityAsync(grantId, AlicePersonId, viewedPersonId: null, validTo: null).ConfigureAwait(false);
 
-        var grants = await _visibility!.GetActiveGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
+        var grants = await _visibility!.GetActiveVisibilityGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
         grants.Should().ContainSingle();
         grants[0].VisibilityId.Should().Be(grantId);
         grants[0].ViewerPersonId.Should().Be(AlicePersonId);
@@ -146,7 +146,7 @@ public sealed class VisibilityRolesSchemaTests : IAsyncLifetime
         await InsertVisibilityAsync(activeId, AlicePersonId, viewedPersonId: BobPersonId, validTo: null).ConfigureAwait(false);
         await InsertVisibilityAsync(revokedId, AlicePersonId, viewedPersonId: BobPersonId, validTo: new DateTime(2021, 6, 1, 0, 0, 0, DateTimeKind.Utc)).ConfigureAwait(false);
 
-        var grants = await _visibility!.GetActiveGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
+        var grants = await _visibility!.GetActiveVisibilityGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
         grants.Should().ContainSingle().Which.VisibilityId.Should().Be(activeId);
     }
 
@@ -164,7 +164,7 @@ public sealed class VisibilityRolesSchemaTests : IAsyncLifetime
             viewedPersonId: BobPersonId,
             validTo: DateTime.UtcNow.AddHours(1)).ConfigureAwait(false);
 
-        var grants = await _visibility!.GetActiveGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
+        var grants = await _visibility!.GetActiveVisibilityGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
         grants.Should().BeEmpty();
     }
 
@@ -174,7 +174,7 @@ public sealed class VisibilityRolesSchemaTests : IAsyncLifetime
         var otherTenant = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
         await InsertVisibilityAsync(Guid.NewGuid(), AlicePersonId, viewedPersonId: BobPersonId, validTo: null, tenantId: otherTenant).ConfigureAwait(false);
 
-        var grants = await _visibility!.GetActiveGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
+        var grants = await _visibility!.GetActiveVisibilityGrantsByViewerAsync(TenantId, AlicePersonId, CancellationToken.None);
         grants.Should().BeEmpty();
     }
 
