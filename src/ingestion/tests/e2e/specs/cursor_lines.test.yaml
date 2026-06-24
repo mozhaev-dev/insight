@@ -1,0 +1,63 @@
+spec_version: 1
+description: >
+  cursor_lines (Cursor Accepted Lines) — Σ acceptedLinesAdded per person.
+  Path: bronze_cursor.cursor_daily_usage → dbt cursor__ai_dev_usage
+  (lines_added = coalesce(acceptedLinesAdded,0), tool='cursor') → silver
+  class_ai_dev_usage → gold insight.ai_bullet_rows (Branch 2) → IC Bullet AI.
+
+# bronze — seed fixture. Key = TABLE NAME. Each row = $ref to a template + the
+# fields under test. alice/bob/carol all live in Engineering (people.yaml) → one
+# team (org_unit), so the IC bullet's median/range are computed over the three.
+bronze:
+  bronze_bamboohr.employees:
+    - $ref: templates/people.yaml#/templates/alice
+    - $ref: templates/people.yaml#/templates/bob
+    - $ref: templates/people.yaml#/templates/carol
+
+  bronze_cursor.cursor_daily_usage:
+    # date = 1767571200000 ms = 2026-01-05T00:00:00Z → day 2026-01-05.
+    - $ref: templates/cursor_usage.yaml#/templates/alice
+      unique_key: cursor-alice-20260105
+      date: 1767571200000
+      acceptedLinesAdded: 40
+
+    - $ref: templates/cursor_usage.yaml#/templates/alice   # re-sync duplicate → sum must stay 40, NOT 80
+      unique_key: cursor-alice-20260105
+      date: 1767571200000
+      acceptedLinesAdded: 40
+
+    - $ref: templates/cursor_usage.yaml#/templates/bob
+      unique_key: cursor-bob-20260105
+      date: 1767571200000
+      acceptedLinesAdded: 20
+
+    - $ref: templates/cursor_usage.yaml#/templates/carol
+      unique_key: cursor-carol-20260105
+      date: 1767571200000
+      acceptedLinesAdded: 10
+
+# cases — IC Bullet AI (…0013): value = the requested person's own sum (from
+# $filter); median/range = over their team (org_unit). cursor_lines over the team
+# = [alice 40, bob 20, carol 10]:
+#   value (alice) = 40   (her sum; the duplicate must dedup, else it would be 80)
+#   median = quantileExact(0.5)[10,20,40] = 20   (team median, NOT alice's)
+#   range  (team) = [10, 40]
+cases:
+  - name: cursor_lines — IC bullet (alice value vs team median, dedup holds)
+    request:
+      url: /v1/metrics/queries
+      method: POST
+      body:
+        queries:
+          - id: ai
+            metric_id: 00000000-0000-0000-0001-000000000013
+            $top: 50
+            $filter: "person_id eq 'alice@example.com' and metric_date ge '2026-01-01' and metric_date le '2026-01-31'"
+            $orderby: metric_key
+    expect:
+      - assert: "status == 200"
+      - in: ai
+        assert: "result.status == 'ok'"
+      - in: ai
+        find: { metric_key: cursor_lines }
+        equal: { value: 40, median: 20, range_min: 10, range_max: 40 }
